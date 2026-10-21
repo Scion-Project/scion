@@ -164,6 +164,10 @@ object QemuCommand {
             "sep-fw=${path("sep_fw")}",
             "sep-rom=${path("sep_rom")}",
             "kaslr-off=true",
+            // Connect out over a unix socket (retried quietly while nothing
+            // listens) instead of the default TCP server, which needs INTERNET.
+            "usb-uplink-type=inferno",
+            "usb-uplink-addr=unix:${paths.usbUplinkSocket.absolutePath}",
         ).joinToString(",")
 
         val accel = buildString {
