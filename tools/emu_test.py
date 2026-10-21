@@ -191,12 +191,15 @@ def cmd_app_smoke(a):
     while time.monotonic() < deadline:
         adb(a.serial, "shell", "uiautomator", "dump", "/sdcard/window_dump.xml", check=False)
         xml = adb(a.serial, "shell", "cat", "/sdcard/window_dump.xml", check=False).stdout
-        if "Status: " in xml:
+        if 'text="VIRTUAL MACHINE"' in xml:
             break
         time.sleep(2)
     (out / "window_dump.xml").write_text(xml)
-    check("Status: stopped" in xml, "main screen renders 'Status: stopped'")
-    check("✓ QEMU binary bundled" in xml, "checks list shows '✓ QEMU binary bundled'")
+    # Since #69 the status word and each check's tick are separate views: the tick
+    # node comes right before its label node in the dump.
+    check('text="Stopped"' in xml, "main screen renders status 'Stopped'")
+    check(re.search(r'text="✓"[^>]*>\s*<node[^>]*text="QEMU binary bundled"', xml) is not None,
+          "checks list shows '✓ QEMU binary bundled'")
     check(bool(adb(a.serial, "shell", "pidof", PKG, check=False).stdout.strip()), "app process is alive")
 
     # Exec QEMU the way the app does: as the app's uid, from nativeLibraryDir (run-as needs a debug APK).
