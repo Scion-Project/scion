@@ -212,7 +212,7 @@ object DebugBundle {
     /** Names, sizes and dates only; never file contents (except vm.properties' names). */
     private fun vmFolder(paths: AppPaths): String = buildString {
         val dir = paths.vmDir
-        appendLine("folder: ${dir.absolutePath}")
+        appendLine("folder: ${dir.absolutePath} (${if (paths.vmInternal) "internal app storage" else "shared storage"})")
         val manifest = File(dir, VmLayout.MANIFEST)
         appendLine()
         appendLine("${VmLayout.MANIFEST}:")

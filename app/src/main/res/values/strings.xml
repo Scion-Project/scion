@@ -7,4 +7,5 @@
     <string name="import_channel">VM folder import</string>
     <string name="import_running">Importing VM folder</string>
     <string name="import_cancel">Cancel</string>
+    <string name="move_running">Moving VM folder</string>
 </resources>

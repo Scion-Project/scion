@@ -167,15 +167,19 @@ object QemuCommand {
             "-drive", "file=sep_ssc,if=pflash,format=raw,file.locking=off",
         )
 
-        fun nvme(id: String, file: String, format: String, device: String, nsid: Int, nstype: Int) {
+        fun nvme(id: String, file: String, format: String, device: String, nsid: Int, nstype: Int, extra: String = "") {
             args += listOf(
-                "-drive", "file=$file,format=$format,if=none,id=$id,file.locking=off",
+                "-drive", "file=$file,format=$format,if=none,id=$id,file.locking=off$extra",
                 // Inferno dev looks namespaces up by id (e.g. peripheral/firmware).
                 "-device", "$device,drive=$id,bus=nvme-bus.0,nsid=$nsid,nstype=$nstype,id=$id," +
                     "logical_block_size=4096,physical_block_size=4096",
             )
         }
-        nvme("root", vm.file("root")!!.name, vm.rootFormat, "nvme-ns", 1, 1)
+        // Let guest TRIM (NVMe deallocate) and zero writes free qcow2 clusters, so the
+        // image can shrink again (#56). If the host file system can't punch holes
+        // (possibly shared storage's FUSE layer), QEMU just keeps the space.
+        val reclaim = if (vm.rootFormat == "qcow2") ",discard=unmap,detect-zeroes=unmap" else ""
+        nvme("root", vm.file("root")!!.name, vm.rootFormat, "nvme-ns", 1, 1, reclaim)
         for (ns in VmLayout.SMALL_DISKS) nvme(ns.name, ns.name, "raw", ns.device, ns.nsid, ns.nstype)
         return args
     }

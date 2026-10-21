@@ -117,8 +117,20 @@ object TensorG5 {
 
 /** Paths the app uses at runtime. */
 class AppPaths(ctx: Context) {
-    /** adb-pushable: /sdcard/Android/data/<pkg>/files/vm */
-    val vmDir = File(ctx.getExternalFilesDir(null), "vm")
+    private val app = ctx.applicationContext
+
+    /** adb-pushable: /sdcard/Android/data/<pkg>/files/vm (FUSE-backed shared storage). */
+    val sharedVmDir = File(ctx.getExternalFilesDir(null), "vm")
+    /** /data/user/0/<pkg>/files/vm: app-internal storage, no FUSE in the I/O path. */
+    val internalVmDir = File(ctx.filesDir, "vm")
+
+    /**
+     * Where the VM in use lives. Only a completed move ([ImportService.move]) changes it, so it
+     * never points at a half-copied folder; imports and Start use whatever it says.
+     */
+    val vmInternal: Boolean get() = prefs(app).getBoolean(KEY_INTERNAL, false)
+    val vmDir: File get() = if (vmInternal) internalVmDir else sharedVmDir
+
     val qemu = File(ctx.applicationInfo.nativeLibraryDir, "libqemu-system-aarch64.so")
     /** The in-process variant: QEMU as a library, and the JNI shim that calls it. */
     val qemuLib = File(ctx.applicationInfo.nativeLibraryDir, "libqemu-system-aarch64-shared.so")
@@ -128,4 +140,16 @@ class AppPaths(ctx: Context) {
     val monitorSocket = File(ctx.filesDir, "monitor.sock")
     val logFile = File(ctx.getExternalFilesDir(null), "qemu.log")
     val tmpDir: File = ctx.cacheDir
+
+    companion object {
+        private const val KEY_INTERNAL = "vm_internal"
+        private fun prefs(ctx: Context) = ctx.getSharedPreferences("vm_paths", Context.MODE_PRIVATE)
+
+        /** Synchronous: this is the commit point of a move, so it must be on disk before the source goes. */
+        fun setVmInternal(ctx: Context, internal: Boolean) {
+            check(prefs(ctx.applicationContext).edit().putBoolean(KEY_INTERNAL, internal).commit()) {
+                "cannot save the VM location"
+            }
+        }
+    }
 }
