@@ -4,12 +4,12 @@ import android.app.Activity
 import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.LinearLayout
 import io.github.dylanneve1.iosonpixel.HardwareButton as Key
 
@@ -22,7 +22,9 @@ class DisplayActivity : Activity() {
     private lateinit var screen: ScreenView
     private var surfaceScreen: SurfaceScreen? = null
     private var client: VmDisplay? = null
+    private var touch: VmTouch? = null
     private lateinit var backend: VmBackend
+    private lateinit var ui: Ui
     private val onState: () -> Unit = {
         if (VmState.status == VmState.Status.STOPPED && !attachOnly) {
             client?.close()
@@ -41,6 +43,7 @@ class DisplayActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         backend = VmBackend.current(this)
+        ui = Ui(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         screen = ScreenView(this)
@@ -48,9 +51,11 @@ class DisplayActivity : Activity() {
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setBackgroundColor(Color.rgb(20, 20, 20))
-            addButton("Vol−") { backend.press(Key.VOLUME_DOWN) }
-            addButton("Vol+") { backend.press(Key.VOLUME_UP) }
+            setBackgroundColor(Color.BLACK)
+            val pad = ui.dp(8)
+            setPadding(pad, pad, pad, pad)
+            addButton("Vol −") { backend.press(Key.VOLUME_DOWN) }
+            addButton("Vol +") { backend.press(Key.VOLUME_UP) }
             addButton("Home") { backend.press(Key.HOME) }
             addButton("Apps") {
                 // Double-press Home opens the app switcher.
@@ -83,6 +88,9 @@ class DisplayActivity : Activity() {
         VmState.unobserve(onState)
         client?.close()
         client = null
+        touch?.close()
+        touch = null
+        screen.touch = null
         super.onStop()
     }
 
@@ -100,15 +108,27 @@ class DisplayActivity : Activity() {
         }
         client = c
         c.start()
+        touch = backend.openTouch()?.also { it.start() }
+        screen.touch = touch
     }
 
     private fun LinearLayout.addButton(label: String, onLong: (() -> Unit)? = null, onClick: () -> Unit) {
-        addView(Button(context).apply {
-            text = label
-            isAllCaps = false
-            setOnClickListener { onClick() }
-            if (onLong != null) setOnLongClickListener { onLong(); true }
-        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        // Haptic tick on every press: the guest reacts slowly, so confirm the tap locally.
+        addView(ui.button(label, Ui.Style.TONAL) {
+            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            onClick()
+        }.apply {
+            textSize = 14f
+            setPadding(0, 0, 0, 0)
+            if (onLong != null) setOnLongClickListener {
+                it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                onLong()
+                true
+            }
+        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
+            marginStart = ui.dp(3)
+            marginEnd = ui.dp(3)
+        })
     }
 
     companion object {

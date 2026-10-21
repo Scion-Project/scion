@@ -12,7 +12,8 @@ import java.util.concurrent.TimeUnit
  * Software emulation: our Inferno build runs as a child process (or, with
  * [VmSettings.inProcess], as a library in the :vm process, see
  * [QemuInProcess]), its display is QEMU's VNC server on a unix socket (read
- * by [RfbClient]) and the buttons go through the human monitor ([Monitor]).
+ * by [RfbClient]), the buttons go through the human monitor ([Monitor]) and
+ * multi-touch goes through QMP ([QmpTouch]).
  */
 class QemuBackend(ctx: Context) : VmBackend {
     private val app = ctx.applicationContext
@@ -24,7 +25,8 @@ class QemuBackend(ctx: Context) : VmBackend {
     private val libOk get() = paths.qemuLib.isFile && paths.qemuJni.isFile
 
     override fun checks(): List<VmBackend.Check> {
-        val problems = VmLayout(paths.vmDir).problems()
+        val vm = VmLayout(paths.vmDir)
+        val problems = vm.problems()
         val qemuOk = paths.qemu.isFile
         return buildList {
             add(
@@ -36,6 +38,7 @@ class QemuBackend(ctx: Context) : VmBackend {
             )
             if (problems.isEmpty()) add(VmBackend.Check(true, "VM folder looks complete"))
             else problems.forEach { add(VmBackend.Check(false, it)) }
+            vm.ramdisk?.takeIf { it.isFile }?.let { add(VmBackend.Check(true, "ramdisk ${it.name} (passed as -initrd)")) }
         }
     }
 
@@ -49,6 +52,7 @@ class QemuBackend(ctx: Context) : VmBackend {
         installDataFiles()
         paths.vncSocket.delete()
         paths.monitorSocket.delete()
+        paths.qmpSocket.delete()
 
         val cmd = QemuCommand.build(paths, vm, settings)
         log("$ " + cmd.joinToString(" "))
@@ -79,6 +83,8 @@ class QemuBackend(ctx: Context) : VmBackend {
     }
 
     override fun openDisplay(listener: VmDisplay.Listener): VmDisplay = RfbClient(paths.vncSocket, listener)
+
+    override fun openTouch(): VmTouch = QmpTouch(paths)
 
     /** In-process the VM draws into the app's Surface (-display android); the child process uses VNC. */
     override fun surfaceDisplay(): SurfaceDisplay? = if (inProcess) QemuInProcess else null
@@ -176,12 +182,17 @@ object QemuCommand {
             "-accel", accel,
             "-kernel", path("kernel"),
             "-dtb", path("dtb"),
+        )
+        // Optional restore ramdisk; without the key the command is unchanged.
+        vm.ramdisk?.takeIf { it.isFile }?.let { args += listOf("-initrd", it.absolutePath) }
+        args += listOf(
             "-append", "tlto_us=-1 mtxspin=-1 agm-genuine=1 agm-authentic=1 agm-trusted=1 " +
                 "serial=3 wdt=-1 -vm_compressor_wk_sw",
             "-smp", s.smp.toString(),
             "-m", "${s.ramGb}G",
             *display.toTypedArray(),
             "-monitor", "unix:${paths.monitorSocket.absolutePath},server=on,wait=off",
+            "-qmp", "unix:${paths.qmpSocket.absolutePath},server=on,wait=off",
             "-serial", "stdio",
             // Shared storage is FUSE-backed; OFD locks there are unreliable.
             "-drive", "file=sep_nvram,if=pflash,format=raw,file.locking=off",
