@@ -110,7 +110,9 @@ interface SurfaceDisplay {
 
     /** Press or release a key, by QEMU key name (as for the monitor's sendkey). */
     fun key(name: String, down: Boolean)
+}
 
+/**
  * Multi-touch input: each finger is its own contact. While [available] is
  * false, touch falls back to the single [VmDisplay.pointer].
  */
