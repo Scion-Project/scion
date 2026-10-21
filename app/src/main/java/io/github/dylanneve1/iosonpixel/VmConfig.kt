@@ -76,13 +76,20 @@ data class VmSettings(
     val tbSizeMb: Int = 1024,
     /** Map the JIT buffer twice (RW + RX) instead of RWX. */
     val splitWx: Boolean = false,
-    /** Pin vCPU threads per [TensorG5.DEFAULT_VCPU_AFFINITY]; empty disables. */
-    val vcpuAffinity: String = TensorG5.DEFAULT_VCPU_AFFINITY,
+    /**
+     * vCPU pinning: [AUTO] derives it from [smp] ([TensorG5.vcpuAffinity]),
+     * empty disables it, anything else is used as given. See [effectiveVcpuAffinity].
+     */
+    val vcpuAffinity: String = AUTO,
     /** VM engine; only implemented backends are ever loaded. */
     val backend: Backend = Backend.QEMU,
     /** Run QEMU as a library in the :vm process instead of as a child process. */
     val inProcess: Boolean = false,
 ) {
+    /** What QEMU_VCPU_AFFINITY is set to for this run; empty means no pinning. */
+    val effectiveVcpuAffinity: String
+        get() = if (vcpuAffinity.equals(AUTO, ignoreCase = true)) TensorG5.vcpuAffinity(smp) else vcpuAffinity
+
     fun save(ctx: Context) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putInt("ram_gb", ramGb).putInt("smp", smp).putInt("tb_size_mb", tbSizeMb)
@@ -93,6 +100,7 @@ data class VmSettings(
 
     companion object {
         private const val PREFS = "vm_settings"
+        const val AUTO = "auto"
 
         fun load(ctx: Context): VmSettings {
             val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -102,7 +110,9 @@ data class VmSettings(
                 smp = p.getInt("smp", d.smp),
                 tbSizeMb = p.getInt("tb_size_mb", d.tbSizeMb),
                 splitWx = p.getBoolean("split_wx", d.splitWx),
-                vcpuAffinity = p.getString("vcpu_affinity", d.vcpuAffinity) ?: d.vcpuAffinity,
+                // Earlier builds saved the fixed 7-vCPU string as the default; treat it as auto.
+                vcpuAffinity = p.getString("vcpu_affinity", d.vcpuAffinity)
+                    ?.takeIf { it != TensorG5.LEGACY_VCPU_AFFINITY } ?: d.vcpuAffinity,
                 backend = Backend.fromId(p.getString("backend", null))?.takeIf { it.implemented } ?: d.backend,
                 inProcess = p.getBoolean("in_process", d.inProcess),
             )
@@ -115,12 +125,20 @@ data class VmSettings(
  * cpu0-1 Cortex-A520, cpu2-6 Cortex-A725, cpu7 Cortex-X4.
  */
 object TensorG5 {
+    const val BIG_CORES = "2-7"
+    const val LITTLE_CORES = "0-1"
+
+    /** The fixed default before it depended on the vCPU count (right only for 7 vCPUs). */
+    const val LEGACY_VCPU_AFFINITY = "2-7;2-7;2-7;2-7;2-7;2-7;0-1"
+
     /**
-     * One cpu-set per vCPU, ';'-separated; the last entry repeats.
-     * The six emulated A13 application cores float over the six big cores,
-     * and the emulated SEP core (vCPU 6) stays on the little cores.
+     * Default QEMU_VCPU_AFFINITY for [smp] vCPUs: one cpu-set per vCPU,
+     * ';'-separated (QEMU repeats the last entry). The emulated application
+     * cores float over the six big cores and the SEP core, always the last
+     * vCPU, stays on the little cores. A single vCPU has no SEP and goes big.
      */
-    const val DEFAULT_VCPU_AFFINITY = "2-7;2-7;2-7;2-7;2-7;2-7;0-1"
+    fun vcpuAffinity(smp: Int): String =
+        if (smp <= 1) BIG_CORES else (List(smp - 1) { BIG_CORES } + LITTLE_CORES).joinToString(";")
 }
 
 /** Paths the app uses at runtime. */

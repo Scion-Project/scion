@@ -69,7 +69,8 @@ object DebugBundle {
                 File(app.filesDir, LAST_RUN).writeText(
                     "time: ${now()}\nstatus: ${st.name.lowercase()}\n" +
                         "exit code: ${VmState.lastExit ?: "n/a"}\n" +
-                        "command: ${lastCommand ?: "n/a"}\n",
+                        "command: ${lastCommand ?: "n/a"}\n" +
+                        "QEMU_VCPU_AFFINITY: ${pinning(VmSettings.load(app))}\n",
                 )
                 if (st == VmState.Status.STOPPED) File(app.filesDir, LAST_RUN_LOG).writeText(log)
             }
@@ -202,7 +203,11 @@ object DebugBundle {
     }
 
     private fun settings(app: Context): String = buildString {
-        appendLine(VmSettings.load(app).toString())
+        val s = VmSettings.load(app)
+        appendLine(s.toString())
+        appendLine()
+        appendLine("effective QEMU_VCPU_AFFINITY: ${pinning(s)}" +
+            if (s.vcpuAffinity.equals(VmSettings.AUTO, ignoreCase = true)) " (auto, from ${s.smp} vCPUs)" else " (as set)")
         appendLine()
         appendLine("raw preferences (vm_settings):")
         app.getSharedPreferences("vm_settings", Context.MODE_PRIVATE).all.toSortedMap()
@@ -298,6 +303,8 @@ object DebugBundle {
     """.trimIndent() + "\n"
 
     // ---- helpers ---------------------------------------------------------------
+
+    private fun pinning(s: VmSettings) = s.effectiveVcpuAffinity.ifBlank { "(off)" }
 
     internal fun commandFromLog(log: String): String? =
         log.lineSequence().lastOrNull { it.startsWith("$ ") }?.removePrefix("$ ")

@@ -58,7 +58,7 @@ class QemuBackend(ctx: Context) : VmBackend {
         if (settings.inProcess) {
             val env = buildMap {
                 put("TMPDIR", paths.tmpDir.absolutePath)
-                if (settings.vcpuAffinity.isNotBlank()) put("QEMU_VCPU_AFFINITY", settings.vcpuAffinity)
+                if (settings.effectiveVcpuAffinity.isNotBlank()) put("QEMU_VCPU_AFFINITY", settings.effectiveVcpuAffinity)
             }
             val vmProcess = QemuInProcess(app, paths, cmd, vm.dir.absolutePath, env)
             if (vmProcess.bind()) return vmProcess
@@ -68,8 +68,8 @@ class QemuBackend(ctx: Context) : VmBackend {
 
         val pb = ProcessBuilder(cmd).directory(vm.dir).redirectErrorStream(true)
         pb.environment()["TMPDIR"] = paths.tmpDir.absolutePath
-        if (settings.vcpuAffinity.isNotBlank()) {
-            pb.environment()["QEMU_VCPU_AFFINITY"] = settings.vcpuAffinity
+        if (settings.effectiveVcpuAffinity.isNotBlank()) {
+            pb.environment()["QEMU_VCPU_AFFINITY"] = settings.effectiveVcpuAffinity
         }
 
         return try {

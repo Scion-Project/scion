@@ -111,9 +111,10 @@ These are taken from the Pixel 10 kernel source
 GPU: Imagination (Rogue-family DDK, BVNC `71.2.2448.1212`), 396–1094 MHz.
 
 * **vCPU pinning:** the iPhone 11 has 6 application cores and 1 SEP core
-  (`-smp 7`). The `pixel` branch adds `QEMU_VCPU_AFFINITY`, and the app puts the
-  6 AP vCPUs on the 6 big cores and the SEP vCPU on the little ones by default
-  (`2-7;2-7;2-7;2-7;2-7;2-7;0-1`, editable in the app).
+  (`-smp 7`). The `pixel` branch adds `QEMU_VCPU_AFFINITY`. By default ("auto")
+  the app derives it from the vCPU count: the application vCPUs go on the 6 big
+  cores and the last (SEP) vCPU on the little ones, e.g. `2-7;2-7;2-7;0-1` for
+  `-smp 4`. You can override it in the app.
 * **Compiler tuning:** `-march=armv8.2-a+crypto+dotprod+rcpc -mtune=cortex-x4`.
   This is the baseline every Tensor G5 core supports. SVE is left to runtime detection.
 * **Hardware virtualization is a separate, experimental track.** Pixels ship
