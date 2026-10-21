@@ -44,5 +44,12 @@
             android:name=".ImportService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Serves the "Share debug bundle" zip to the app the user picks (see DebugBundle.kt). -->
+        <provider
+            android:name=".DebugBundleProvider"
+            android:authorities="${applicationId}.debugbundle"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>
