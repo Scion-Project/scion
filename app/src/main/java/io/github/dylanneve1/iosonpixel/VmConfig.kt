@@ -20,6 +20,12 @@ class VmLayout(val dir: File) {
 
     val rootFormat: String get() = props.getProperty("root_format", "raw")
 
+    /**
+     * Optional restore ramdisk (`ramdisk=<file>`), passed to QEMU as `-initrd`.
+     * Null when vm.properties has no (or an empty) ramdisk key.
+     */
+    val ramdisk: File? get() = props.getProperty(RAMDISK)?.trim()?.takeIf { it.isNotEmpty() }?.let { File(dir, it) }
+
     /** Human-readable problems that would stop the VM from booting. */
     fun problems(): List<String> {
         if (!File(dir, MANIFEST).isFile) return listOf("missing $MANIFEST in ${dir.path}")
@@ -31,6 +37,7 @@ class VmLayout(val dir: File) {
                 !f.isFile -> out += "missing file for '$key': ${f.name}"
             }
         }
+        ramdisk?.takeIf { !it.isFile }?.let { out += "missing file for '$RAMDISK': ${it.name}" }
         for (name in SMALL_DISKS.map { it.name } + PFLASH) {
             if (!File(dir, name).isFile) out += "missing disk image: $name"
         }
@@ -45,6 +52,7 @@ class VmLayout(val dir: File) {
         const val MANIFEST = "vm.properties"
         val PFLASH = listOf("sep_nvram", "sep_ssc")
         val REQUIRED_KEYS = listOf("kernel", "dtb", "trustcache", "sep_fw", "sep_rom", "root")
+        const val RAMDISK = "ramdisk"
 
         /** The fixed-name NVMe namespaces from the Inferno setup guide. */
         val SMALL_DISKS = listOf(
@@ -156,6 +164,8 @@ class AppPaths(ctx: Context) {
     val dataDir = File(ctx.filesDir, "qemu-data")
     val vncSocket = File(ctx.filesDir, "vnc.sock")
     val monitorSocket = File(ctx.filesDir, "monitor.sock")
+    /** QMP, for multi-touch input ([QmpTouch]). */
+    val qmpSocket = File(ctx.filesDir, "qmp.sock")
     val logFile = File(ctx.getExternalFilesDir(null), "qemu.log")
     val tmpDir: File = ctx.cacheDir
 

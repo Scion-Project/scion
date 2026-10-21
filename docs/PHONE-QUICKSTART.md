@@ -211,8 +211,10 @@ With adb you can also read the log directly:
   to be sluggish. Nobody has timed it on a phone yet.
 * **iOS 14 only.** Other versions are experimental or unsupported (see the
   [README](../README.md#which-ipsws-work)).
-* **Single touch.** There's no multitouch, and no hardware keyboard input
-  beyond the buttons above. The app doesn't configure audio or networking.
+* **Touch.** Each finger is passed through as its own contact (over QMP) when
+  the bundled Inferno has multitouch support in its touch controller
+  (dylanneve1/Inferno#12); otherwise only one finger works. There's no
+  hardware keyboard input beyond the buttons above. The app doesn't configure audio or networking.
 * **Long runs are untested.** We don't yet know how Android's background
   limits (the phantom-process killer) treat a long boot with the screen off.
   Keep the app or the display in front during the first runs.
