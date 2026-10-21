@@ -25,7 +25,7 @@ patch matrix in `docs/IOS27.md` §3.
 | force enable kprintf | ❌ | ❌ | kernel; serial gate restructured (pre-27 drift; debug-only) |
 
 Also verified: the matrix's ✅ for **"all binaries in trustcache (iOS 16+)"** in
-27 kernel text is a **false positive** — see §7.1.
+27 kernel text is a **false positive** — see §6.1.
 
 The structural headline: on 27 the kernel has **no `__PPLTEXT`**, and
 code-signing / trust-cache / Image4 trust evaluation / entitlement checks /
@@ -165,17 +165,23 @@ monitors expect — exactly the emulator work now in progress on branch
 (`txm.iphoneos.release.im4p`) with the same PAYP-tagged structure already handled
 by the fixed IM4P decoder, decompressing (LZFSE) to the Mach-O described in §2.
 
-The IPSW also ships a **research** TXM (`txm.iphoneos.research.im4p`, identical
-size to release). A function-level comparison of the two is in progress (§8) and
-is documented here only to inform which image the emulator should load — the
-guide already prefers research kernelcaches, and the analogous choice exists for
-TXM.
+The IPSW also ships a **research** TXM (`txm.iphoneos.research.im4p`). Both 27.0.1
+TXM images are the same size (557088 bytes) and differ in only ~4.4 KB across
+~105 byte-runs: ~3984 bytes in `__TEXT.__cstring` (diagnostic/log strings), only
+~419 bytes (~100 instructions) in `__TEXT_EXEC.__text`, and ~22 bytes of
+`__binname`/header identity. So the research build differs almost entirely by
+**diagnostics**, not by relaxed enforcement — loading it gives a more talkative
+monitor during bring-up but is **not** a bypass of TXM. The precise
+characterisation of the ~419-byte code delta is follow-up and does not change
+this conclusion. The emulator should prefer the research TXM for its logging,
+exactly as the guide already prefers research kernelcaches.
 
 ## 8. OPEN questions (how to resolve)
 
-- **OPEN — research vs release TXM delta.** Per-function diff of the two TXM
-  images (align on `__TEXT_EXEC.__text`, list differing functions by offset).
-  Documents which image is the more permissive/debuggable one to load.
+- **RESOLVED — research vs release TXM delta** (§7): ~4.4 KB total, ~3984 B in
+  `__cstring` (diagnostics) and only ~419 B in `__text`; the research build adds
+  logging, not relaxed enforcement. A per-function breakdown of the ~419 B code
+  delta is optional follow-up.
 - **OPEN — AMX on 27 for emulation.** Does 27's AMX init touch any
   system-register / instruction TCG must handle? Resolve by locating
   `_commpage_populate` + the AMX init path on 27 and checking against Inferno's
