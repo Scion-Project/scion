@@ -111,6 +111,18 @@ needs_exe_wrapper = true
 CMAKE_ANDROID_NDK = '$ANDROID_NDK_HOME'
 CMAKE_ANDROID_ARCH_ABI = 'arm64-v8a'
 CMAKE_SYSTEM_VERSION = '$API'
+# Never let CMake find host (e.g. Homebrew) headers or libraries: libyuv's
+# find_package(JPEG) picked up /opt/homebrew/lib/libjpeg.a and exported
+# /opt/homebrew/include to QEMU, where a Homebrew nettle 4 header shadowed our
+# nettle 3.10 (trng.c then called a symbol our libnettle lacks). Search only
+# our sysroot (+ the NDK's) for libs/headers/packages; host programs are fine.
+CMAKE_FIND_ROOT_PATH = '$PREFIX'
+CMAKE_FIND_ROOT_PATH_MODE_LIBRARY = 'ONLY'
+CMAKE_FIND_ROOT_PATH_MODE_INCLUDE = 'ONLY'
+CMAKE_FIND_ROOT_PATH_MODE_PACKAGE = 'ONLY'
+CMAKE_FIND_ROOT_PATH_MODE_PROGRAM = 'NEVER'
+# libyuv's JPEG paths aren't used (vnc_jpeg is disabled); don't look for it.
+CMAKE_DISABLE_FIND_PACKAGE_JPEG = 'TRUE'
 EOF
 
 # QEMU itself is built as a "linux" host: bionic is Linux, and QEMU only enables
