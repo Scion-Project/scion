@@ -40,7 +40,7 @@ export CXX="$TC/bin/$TRIPLE$API-clang++"
 export AR="$TC/bin/llvm-ar" NM="$TC/bin/llvm-nm" RANLIB="$TC/bin/llvm-ranlib"
 export STRIP="$TC/bin/llvm-strip" OBJCOPY="$TC/bin/llvm-objcopy" LD="$TC/bin/ld.lld"
 
-for tool in meson ninja pkg-config curl python3; do
+for tool in meson ninja pkg-config cmake git curl python3; do
   command -v "$tool" >/dev/null || { echo "missing host tool: $tool" >&2; exit 1; }
 done
 
@@ -84,6 +84,7 @@ ar = '$AR'
 nm = '$NM'
 strip = '$STRIP'
 pkg-config = '$WORK/pkg-config'
+cmake = '$(command -v cmake)'
 
 [host_machine]
 system = 'android'
@@ -102,6 +103,13 @@ libdir = 'lib'
 
 [properties]
 needs_exe_wrapper = true
+
+# For CMake-based subprojects (libyuv): CMake's Android platform module needs
+# to be told where the NDK is and which ABI/API to target.
+[cmake]
+CMAKE_ANDROID_NDK = '$ANDROID_NDK_HOME'
+CMAKE_ANDROID_ARCH_ABI = 'arm64-v8a'
+CMAKE_SYSTEM_VERSION = '$API'
 EOF
 
 fetch() { # url sha256 -> path of the downloaded file
@@ -194,9 +202,10 @@ build_deps() {
 configure_qemu() { # builddir
   # Inferno dev dropped QEMU's ./configure wrapper; drive meson directly.
   # It only builds aarch64-softmmu now, so there is no target list to pass.
+  # dev pulls libyuv (CMake), mlib and keycodemapdb in as meson subprojects.
   env -u AR -u NM -u RANLIB -u STRIP -u OBJCOPY -u LD CC="$WORK/host-cc" CXX="$WORK/host-c++" \
     meson setup "$1" "$SRC_QEMU" --cross-file "$WORK/android-arm64.cross" \
-    --buildtype=release --wrap-mode=nodownload -Dwerror=false -Ddebug=false \
+    --buildtype=release --wrap-mode=default -Dwerror=false -Ddebug=false \
     -Ddefault_library=static -Dtools=disabled -Dqom_cast_debug=false \
     -Dkvm=disabled -Dhvf=disabled -Dwhpx=disabled -Dtcg=enabled \
     -Dvnc=enabled -Dvnc_jpeg=disabled -Dpng=disabled -Dvnc_sasl=disabled \
