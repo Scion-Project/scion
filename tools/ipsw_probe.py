@@ -29,6 +29,12 @@ KNOWN_MAJORS = {13, 14, 15, 16, 17, 18, 26}
 UI_MAJORS = {14}
 REFERENCE_BUILD = "18A5351d"  # iOS 14.0 beta 5, used throughout the Inferno guide
 
+# Manifest components for the Secure Page Table Monitor and Trusted Execution
+# Monitor. iOS 27 is the first t8030 release to ship them: the kernel then hands
+# page tables and code signing to monitors at a guarded level Inferno doesn't
+# emulate yet (upstream: ChefKissInc/Inferno#268, "Gaia" release).
+MONITOR_COMPONENTS = {"Ap,SecurePageTableMonitor": "SPTM", "Ap,TrustedExecutionMonitor": "TXM"}
+
 UA = {"User-Agent": "ios-on-pixel-ipsw-probe/0.1"}
 
 
@@ -127,7 +133,11 @@ def probe(src):
         }
         rd = files["restore_ramdisk_erase"]
         files["restore_trustcache"] = f"Firmware/{rd}.trustcache" if rd else None
+        for component, label in MONITOR_COMPONENTS.items():
+            if path_of(erase, component):
+                files[label.lower()] = path_of(erase, component)
     present = {k: (v in names if v else False) for k, v in files.items()}
+    monitors = [label for label in ("SPTM", "TXM") if label.lower() in files]
 
     issues, notes = [], []
     if PRODUCT not in products or not ids:
@@ -138,6 +148,13 @@ def probe(src):
         issues.append(f"iOS {major} kernel is unknown to the t8030 machine; QEMU cannot boot it")
     elif major not in UI_MAJORS:
         notes.append(f"iOS {major} is recognised but not documented to reach SpringBoard (experimental)")
+    if monitors:
+        issues.append(f"boots through {'/'.join(monitors)}, which Inferno does not emulate yet "
+                      "(upstream: ChefKissInc/Inferno#268)")
+    encrypted = sorted(k for k in ("os_image", "restore_ramdisk_erase", "restore_ramdisk_upgrade")
+                       if (files.get(k) or "").endswith(".aea"))
+    if encrypted:
+        notes.append(f"AEA-encrypted images ({', '.join(encrypted)}) must be decrypted manually before use")
     for key in ("device_tree", "sep_firmware", "restore_ramdisk_erase", "restore_trustcache"):
         if ids and not present.get(key):
             issues.append(f"missing {key.replace('_', ' ')} ({files.get(key)})")

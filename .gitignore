@@ -7,3 +7,4 @@ local.properties
 native/build/
 app/src/main/jniLibs/
 app/src/main/assets/qemu-data/
+__pycache__/
