@@ -125,7 +125,12 @@ needed three more things beyond the above:
   killer doesn't apply) and passes argv/env/cwd plus a console pipe over the
   binder. QEMU's `exit()` ends the :vm process. The pipe's EOF marks the exit,
   and the status comes from `ActivityManager.getHistoricalProcessExitReasons`.
-  The sockets are the same, so display and input don't change.
+  Its display is **`-display android`** (Inferno `ui/android.c`): DisplayActivity's
+  `SurfaceScreen` passes its Surface to the :vm process over the binder, and
+  QEMU draws the dirty rectangle of the console straight into it on each refresh
+  (no VNC). Touch (absolute pointer) and the buttons (`f2`–`f6` key events) go in
+  through QEMU's input layer the same way, and framebuffer size changes come
+  back for the aspect ratio. The monitor socket stays for `quit`.
 * **Display:** `-display none -vnc unix:files/vnc.sock`, read by `rfb/RfbClient.kt`
   (RFB 3.8, no auth, raw + DesktopSize). Pixels are requested as LE 0x00RRGGBB
   and ORed to opaque ARGB.

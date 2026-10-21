@@ -4,6 +4,8 @@ import android.content.Context
 import io.github.dylanneve1.iosonpixel.rfb.RfbClient
 import java.io.File
 import java.io.FileWriter
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
@@ -84,7 +86,18 @@ class QemuBackend(ctx: Context) : VmBackend {
 
     override fun openTouch(): VmTouch = QmpTouch(paths)
 
-    override fun press(button: HardwareButton, holdMs: Int) = Monitor.press(paths, key(button), holdMs)
+    /** In-process the VM draws into the app's Surface (-display android); the child process uses VNC. */
+    override fun surfaceDisplay(): SurfaceDisplay? = if (inProcess) QemuInProcess else null
+
+    override fun press(button: HardwareButton, holdMs: Int) {
+        if (!inProcess) return Monitor.press(paths, key(button), holdMs)
+        // Through QEMU's input layer, like the monitor's sendkey with a hold time.
+        keys.execute {
+            QemuInProcess.key(key(button), true)
+            Thread.sleep(holdMs.toLong())
+            QemuInProcess.key(key(button), false)
+        }
+    }
 
     /** Inferno maps the buttons to F-keys (see its "Using the Device's Buttons"). */
     private fun key(button: HardwareButton) = when (button) {
@@ -134,6 +147,11 @@ class QemuBackend(ctx: Context) : VmBackend {
         }
         if (assets.list("qemu-data").orEmpty().isNotEmpty()) copy("qemu-data", paths.dataDir)
     }
+
+    private companion object {
+        /** Presses in order, one at a time (Apps is two Home presses). */
+        val keys: ExecutorService = Executors.newSingleThreadExecutor()
+    }
 }
 
 object QemuCommand {
@@ -153,6 +171,10 @@ object QemuCommand {
             if (s.splitWx) append(",split-wx=on")
         }
 
+        // In-process the VM draws into the app's Surface; the child process serves VNC.
+        val display = if (s.inProcess) listOf("-display", "android")
+        else listOf("-display", "none", "-vnc", "unix:${paths.vncSocket.absolutePath}")
+
         val args = mutableListOf(
             paths.qemu.absolutePath,
             "-L", paths.dataDir.absolutePath,
@@ -168,8 +190,7 @@ object QemuCommand {
                 "serial=3 wdt=-1 -vm_compressor_wk_sw",
             "-smp", s.smp.toString(),
             "-m", "${s.ramGb}G",
-            "-display", "none",
-            "-vnc", "unix:${paths.vncSocket.absolutePath}",
+            *display.toTypedArray(),
             "-monitor", "unix:${paths.monitorSocket.absolutePath},server=on,wait=off",
             "-qmp", "unix:${paths.qmpSocket.absolutePath},server=on,wait=off",
             "-serial", "stdio",

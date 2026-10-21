@@ -2,6 +2,7 @@ package io.github.dylanneve1.iosonpixel
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.view.Surface
 
 /**
  * The engine that runs the guest. VmService, MainActivity and DisplayActivity
@@ -27,6 +28,9 @@ interface VmBackend {
 
     /** A framebuffer + pointer connection to the running guest, not yet started. */
     fun openDisplay(listener: VmDisplay.Listener): VmDisplay
+
+    /** If the backend draws straight into a Surface, that display; else null and [openDisplay] is used. */
+    fun surfaceDisplay(): SurfaceDisplay? = null
 
     /** Multi-touch input to the running guest, not yet started; null if this backend has none. */
     fun openTouch(): VmTouch? = null
@@ -87,6 +91,25 @@ interface VmDisplay {
 
     /** Absolute pointer event in framebuffer coordinates; [pressed] = finger on the glass. */
     fun pointer(x: Int, y: Int, pressed: Boolean)
+}
+
+/**
+ * A guest display drawn by the VM itself into a Surface the app hands over
+ * (QEMU in-process with -display android), with input going straight in.
+ */
+interface SurfaceDisplay {
+    /**
+     * Draw into [surface] from now on, or stop if null; when this returns the
+     * previous Surface is no longer drawn into. [onSize] gets the guest
+     * framebuffer size now (if known) and on every change, on any thread.
+     */
+    fun setSurface(surface: Surface?, onSize: ((Int, Int) -> Unit)?)
+
+    /** A finger at ([x], [y]) in a [w] x [h] area covering the framebuffer. */
+    fun touch(x: Int, y: Int, w: Int, h: Int, down: Boolean)
+
+    /** Press or release a key, by QEMU key name (as for the monitor's sendkey). */
+    fun key(name: String, down: Boolean)
 }
 
 /**

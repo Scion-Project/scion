@@ -15,6 +15,8 @@ import android.os.Parcel
 import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.system.Os
+import android.util.Log
+import android.view.Surface
 import android.system.OsConstants
 import java.io.FileDescriptor
 import java.io.FileOutputStream
@@ -23,10 +25,22 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.system.exitProcess
 
-/** The JNI shim in native/qemu_jni.c. */
+/** The JNI shim in native/qemu_jni.c; used in the :vm process only. */
 object QemuNative {
-    /** Loads [lib] and runs its qemu_android_main(); ends the process with QEMU's exit status. */
-    external fun run(lib: String, argv: Array<String>, cwd: String)
+    init { System.loadLibrary("qemu_jni") }
+
+    /** Loads QEMU from [lib]; returns null, or the dlopen/dlsym error. */
+    @JvmStatic external fun load(lib: String): String?
+    /** Runs qemu_android_main(); ends the process with QEMU's exit status. */
+    @JvmStatic external fun run(argv: Array<String>, cwd: String)
+
+    // -display android (ui/android.c); no-ops if the library lacks it.
+    @JvmStatic external fun setSurface(surface: Surface?)
+    @JvmStatic external fun touch(x: Int, y: Int, w: Int, h: Int, down: Boolean)
+    @JvmStatic external fun key(name: String, down: Boolean)
+
+    /** Called by the shim on QEMU's main loop when the guest framebuffer size changes. */
+    @JvmStatic fun onResize(w: Int, h: Int) = QemuVmService.onResize(w, h)
 }
 
 /**
@@ -37,18 +51,34 @@ object QemuNative {
  *
  * Bound (not started) by [QemuInProcess] from VmService, so it gets the
  * foreground service's priority, and given its arguments over the binder.
+ * The display (-display android) also goes over the binder: the app's
+ * Surface, touches and keys in, framebuffer size changes out.
  */
 class QemuVmService : Service() {
     private val binder = object : Binder() {
         override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
-            if (code != TX_START) return super.onTransact(code, data, reply, flags)
-            val lib = data.readString()!!
-            val argv = data.createStringArray()!!
-            val cwd = data.readString()!!
-            val env = data.createStringArray()!!
-            val console = data.readFileDescriptor()
-            reply?.writeInt(Process.myPid())
-            start(lib, argv, cwd, env, console)
+            when (code) {
+                TX_START -> {
+                    val lib = data.readString()!!
+                    val argv = data.createStringArray()!!
+                    val cwd = data.readString()!!
+                    val env = data.createStringArray()!!
+                    val console = data.readFileDescriptor()
+                    reply?.writeInt(Process.myPid())
+                    start(lib, argv, cwd, env, console)
+                }
+                TX_SURFACE -> {
+                    val surface = if (data.readInt() != 0) Surface.CREATOR.createFromParcel(data) else null
+                    val size = setSurface(surface, data.readStrongBinder())
+                    reply?.writeInt(size.first)
+                    reply?.writeInt(size.second)
+                }
+                TX_TOUCH -> if (loaded) {
+                    QemuNative.touch(data.readInt(), data.readInt(), data.readInt(), data.readInt(), data.readInt() != 0)
+                }
+                TX_KEY -> if (loaded) QemuNative.key(data.readString()!!, data.readInt() != 0)
+                else -> return super.onTransact(code, data, reply, flags)
+            }
             return true
         }
     }
@@ -72,9 +102,17 @@ class QemuVmService : Service() {
         // The main loop runs on this thread; give it a native-sized stack.
         Thread(null, {
             try {
-                System.loadLibrary("qemu_jni")
-                QemuNative.run(lib, argv, cwd)
+                QemuNative.load(lib)?.let { err ->
+                    FileOutputStream(FileDescriptor.err).use { it.write("error: cannot load QEMU from $lib: $err\n".toByteArray()) }
+                    exitProcess(127)
+                }
+                synchronized(displayLock) {
+                    loaded = true
+                    surface?.let { QemuNative.setSurface(it) }
+                }
+                QemuNative.run(argv, cwd)
             } catch (t: Throwable) {
+                Log.e(TAG, "in-process QEMU failed", t)
                 FileOutputStream(FileDescriptor.err).use { it.write("error: in-process QEMU: $t\n".toByteArray()) }
             }
             exitProcess(127)
@@ -82,7 +120,48 @@ class QemuVmService : Service() {
     }
 
     companion object {
+        private const val TAG = "QemuVmService"
         const val TX_START = IBinder.FIRST_CALL_TRANSACTION
+        const val TX_SURFACE = IBinder.FIRST_CALL_TRANSACTION + 1
+        const val TX_TOUCH = IBinder.FIRST_CALL_TRANSACTION + 2
+        const val TX_KEY = IBinder.FIRST_CALL_TRANSACTION + 3
+        /** Sent to the app's size listener. */
+        const val TX_RESIZE = IBinder.FIRST_CALL_TRANSACTION
+
+        private val displayLock = Any()
+        @Volatile private var loaded = false
+        private var surface: Surface? = null
+        private var sizeListener: IBinder? = null
+        private var width = 0
+        private var height = 0
+
+        /** Draw into [s] (null stops); returns the current framebuffer size. */
+        private fun setSurface(s: Surface?, listener: IBinder?): Pair<Int, Int> = synchronized(displayLock) {
+            val old = surface
+            surface = s
+            sizeListener = listener
+            // Once this returns QEMU no longer touches the old window.
+            if (loaded) QemuNative.setSurface(s)
+            old?.release()
+            width to height
+        }
+
+        fun onResize(w: Int, h: Int) {
+            val listener = synchronized(displayLock) {
+                width = w
+                height = h
+                sizeListener
+            } ?: return
+            val data = Parcel.obtain()
+            try {
+                data.writeInt(w)
+                data.writeInt(h)
+                listener.transact(TX_RESIZE, data, null, IBinder.FLAG_ONEWAY)
+            } catch (_: Exception) {
+            } finally {
+                data.recycle()
+            }
+        }
 
         @Volatile private var started = false
         /** Write end of QEMU's stdin; kept open so stdin never reads EOF. */
@@ -90,7 +169,11 @@ class QemuVmService : Service() {
     }
 }
 
-/** Main-process side: binds [QemuVmService] and turns its process into a [VmBackend.Instance]. */
+/**
+ * Main-process side: binds [QemuVmService] and turns its process into a
+ * [VmBackend.Instance]. Its companion is the [SurfaceDisplay] for whichever
+ * in-process VM is running, so the display can attach before or after start.
+ */
 class QemuInProcess(
     ctx: Context,
     private val paths: AppPaths,
@@ -122,7 +205,61 @@ class QemuInProcess(
         bound = app.bindService(
             Intent(app, QemuVmService::class.java), conn, Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT,
         )
+        if (bound) current = this
         return bound
+    }
+
+    @Volatile private var started = false
+
+    /** Receives framebuffer size changes from the :vm process. */
+    private val sizeListener = object : Binder() {
+        override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
+            if (code != QemuVmService.TX_RESIZE) return super.onTransact(code, data, reply, flags)
+            val w = data.readInt()
+            val h = data.readInt()
+            synchronized(Companion) { onSize }?.invoke(w, h)
+            return true
+        }
+    }
+
+    /** Sends the companion's current Surface to the :vm process (synchronously). */
+    private fun sendSurface() {
+        val b = binder ?: return
+        if (!started) return
+        val data = Parcel.obtain()
+        val reply = Parcel.obtain()
+        try {
+            val (s, cb) = synchronized(Companion) { surface to onSize }
+            if (s != null) {
+                data.writeInt(1)
+                s.writeToParcel(data, 0)
+            } else {
+                data.writeInt(0)
+            }
+            data.writeStrongBinder(if (s != null) sizeListener else null)
+            b.transact(QemuVmService.TX_SURFACE, data, reply, 0)
+            val w = reply.readInt()
+            val h = reply.readInt()
+            if (w > 0 && h > 0) cb?.invoke(w, h)
+        } catch (_: Exception) {
+            // The :vm process is gone; pump() reports that.
+        } finally {
+            data.recycle()
+            reply.recycle()
+        }
+    }
+
+    private fun send(code: Int, fill: (Parcel) -> Unit) {
+        val b = binder ?: return
+        if (!started) return
+        val data = Parcel.obtain()
+        try {
+            fill(data)
+            b.transact(code, data, null, IBinder.FLAG_ONEWAY)
+        } catch (_: Exception) {
+        } finally {
+            data.recycle()
+        }
     }
 
     override val isAlive get() = exited.count > 0
@@ -153,6 +290,8 @@ class QemuInProcess(
                 // Only the :vm process may hold the write end, so EOF means it exited.
                 write.close()
             }
+            started = true
+            sendSurface()
 
             FileWriter(paths.logFile, false).use { log ->
                 ParcelFileDescriptor.AutoCloseInputStream(read).bufferedReader().forEachLine { line ->
@@ -165,6 +304,7 @@ class QemuInProcess(
             onLine("error: in-process QEMU: $e")
             return -1
         } finally {
+            if (current === this) current = null
             exited.countDown()
             unbind()
         }
@@ -213,6 +353,31 @@ class QemuInProcess(
                 bound = false
                 app.unbindService(conn)
             }
+        }
+    }
+
+    /** The display of the running in-process VM; keeps the Surface across a VM (re)start. */
+    companion object : SurfaceDisplay {
+        @Volatile private var current: QemuInProcess? = null
+        private var surface: Surface? = null
+        private var onSize: ((Int, Int) -> Unit)? = null
+
+        override fun setSurface(surface: Surface?, onSize: ((Int, Int) -> Unit)?) {
+            synchronized(this) {
+                this.surface = surface
+                this.onSize = onSize
+            }
+            current?.sendSurface()
+        }
+
+        override fun touch(x: Int, y: Int, w: Int, h: Int, down: Boolean) {
+            current?.send(QemuVmService.TX_TOUCH) {
+                it.writeInt(x); it.writeInt(y); it.writeInt(w); it.writeInt(h); it.writeInt(if (down) 1 else 0)
+            }
+        }
+
+        override fun key(name: String, down: Boolean) {
+            current?.send(QemuVmService.TX_KEY) { it.writeString(name); it.writeInt(if (down) 1 else 0) }
         }
     }
 }
