@@ -192,37 +192,39 @@ build_deps() {
 }
 
 configure_qemu() { # builddir
-  (cd "$1" && "$SRC_QEMU/configure" \
-     --cross-prefix="$TRIPLE-" --cc="$CC" --cxx="$CXX" --host-cc="$WORK/host-cc" \
-     --target-list=aarch64-softmmu \
-     --extra-cflags="$OPT_CFLAGS -I$PREFIX/include" --extra-ldflags="-L$PREFIX/lib" \
-     --disable-tools --disable-guest-agent --disable-werror \
-     --disable-debug-info --disable-qom-cast-debug --disable-modules \
-     --enable-lzfse --enable-nettle --disable-gnutls --disable-gcrypt \
-     --enable-vnc --disable-vnc-jpeg --disable-png --disable-vnc-sasl \
-     --disable-sdl --disable-gtk --disable-opengl --disable-curses --disable-cocoa \
-     --disable-slirp --disable-libssh --disable-zstd --disable-linux-aio \
-     --disable-linux-io-uring --disable-libudev --disable-seccomp --disable-cap-ng \
-     --disable-xkbcommon --disable-kvm --disable-virtfs \
-     --disable-alsa --disable-oss --disable-pa --disable-pipewire --disable-jack
-  )
+  # Inferno dev dropped QEMU's ./configure wrapper; drive meson directly.
+  # It only builds aarch64-softmmu now, so there is no target list to pass.
+  env -u AR -u NM -u RANLIB -u STRIP -u OBJCOPY -u LD CC="$WORK/host-cc" CXX="$WORK/host-c++" \
+    meson setup "$1" "$SRC_QEMU" --cross-file "$WORK/android-arm64.cross" \
+    --buildtype=release --wrap-mode=nodownload -Dwerror=false -Ddebug=false \
+    -Ddefault_library=static -Dtools=disabled -Dqom_cast_debug=false \
+    -Dkvm=disabled -Dhvf=disabled -Dwhpx=disabled -Dtcg=enabled \
+    -Dvnc=enabled -Dvnc_jpeg=disabled -Dpng=disabled -Dvnc_sasl=disabled \
+    -Dgnutls=disabled -Dsdl=disabled -Dsdl_image=disabled -Dgtk=disabled -Dvte=disabled \
+    -Dcurses=disabled -Dcocoa=disabled -Dslirp=disabled -Dlibssh=disabled \
+    -Dzstd=disabled -Dlzo=disabled -Dsnappy=disabled -Dbzip2=disabled -Dcurl=disabled \
+    -Dlinux_aio=disabled -Dlinux_io_uring=disabled -Dlibudev=disabled -Dlibusb=disabled \
+    -Dusb_redir=disabled -Dseccomp=disabled -Dcap_ng=disabled -Dxkbcommon=disabled \
+    -Dvde=disabled -Dalsa=disabled -Doss=disabled -Dpa=disabled -Dpipewire=disabled \
+    -Djack=disabled -Dsndio=disabled -Dfuse=disabled -Dmultiprocess=disabled \
+    -Dvalgrind=disabled -Dlibkeyutils=disabled -Dauth_pam=disabled -Dbrlapi=disabled
 }
 
 build_qemu() {
-  [[ -f "$SRC_QEMU/configure" ]] || { echo "run: git submodule update --init" >&2; exit 1; }
-  # Only this nested submodule is needed; skip QEMU's large firmware ROM submodules.
-  [[ -f "$SRC_QEMU/util/mlib/m-algo.h" ]] || git -C "$SRC_QEMU" submodule update --init --depth 1 util/mlib
+  [[ -f "$SRC_QEMU/meson.build" ]] || { echo "run: git submodule update --init" >&2; exit 1; }
   local b="$WORK/qemu"
   # Reconfigure only on the first build or with FRESH=1; otherwise rebuild incrementally.
   if [[ -n "${FRESH:-}" || ! -f "$b/build.ninja" ]]; then
-    rm -rf "$b" && mkdir -p "$b"
+    rm -rf "$b"
     configure_qemu "$b"
   fi
   ninja -C "$b" -j"$JOBS" qemu-system-aarch64
   # Android only lets apps exec files the package manager extracted to
   # nativeLibraryDir, which only accepts lib*.so names.
   "$STRIP" -o "$JNI_OUT/libqemu-system-aarch64.so" "$b/qemu-system-aarch64"
-  cp "$SRC_QEMU/pc-bios/keymaps/en-us" "$ASSET_OUT/keymaps/"
+  # Inferno dev deleted pc-bios/keymaps, but QEMU's VNC server still loads
+  # en-us at start, so ship our vendored copy (GPL-2.0, from QEMU).
+  cp "$NATIVE/keymaps/en-us" "$ASSET_OUT/keymaps/"
   echo "installed $JNI_OUT/libqemu-system-aarch64.so"
 }
 
