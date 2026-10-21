@@ -1,22 +1,26 @@
 # GitHub Actions CI for ios-on-pixel.
 #
 # What it does on every push / PR:
-#   * full-build : cross-compiles the static deps + the Inferno QEMU fork with
-#                  NDK r28 (native/build-android.sh), then ./gradlew assembleDebug,
-#                  and uploads app-debug.apk. This is the real artifact.
-#   * light-build: cheap gate — builds only the static deps (exercises the NDK +
-#                  meson cross path via glib/pixman), drops a stub libqemu .so,
-#                  and runs gradle lint + assembleDebug so the Kotlin/AGP side is
-#                  always checked even when the heavy QEMU compile is skipped.
+#   * full-build    : (macOS) cross-compiles the static deps + the Inferno QEMU
+#                     fork with NDK r28 (native/build-android.sh), Tensor-tuned,
+#                     then ./gradlew assembleDebug; uploads app-debug.apk, the
+#                     real artifact.
+#   * baseline-build: (Linux) the same build for plain armv8-a; its APK is only
+#                     for emulator-smoke.
+#   * light-build   : (Linux) cheap gate: static deps only, a stub libqemu .so,
+#                     then gradle lint + assembleDebug.
+#   * emulator-smoke: (Linux) installs baseline-build's APK on an x86_64 Android
+#                     emulator, checks the UI and runs QEMU in the app sandbox.
 #
 # The APK only ever contains our own code plus GPL/AGPL QEMU, so publishing it as
 # a build artifact is fine (see docs/ETHICS.md). It ships no Apple files.
 #
-# Runner: macOS is REQUIRED. native/build-android.sh is macOS-specific (host-cc
-# probe via xcode-select/DEVELOPER_DIR, `shasum`, `sysctl -n hw.logicalcpu`).
-# We use macos-14 (Apple-silicon). NDK r28 ships only a darwin-x86_64 toolchain,
-# which runs under Rosetta 2 on arm64 runners (installed below). If that ever
-# breaks, switch to an Intel image (macos-13) and drop the Rosetta step.
+# Runners: build-android.sh works on both macOS and Linux hosts (the NDK
+# prebuilt dir is globbed; the host-cc probe falls back to plain cc). Only
+# full-build stays on macOS (macos-14), so the shipped artifact is built the
+# same way as on a dev Mac; everything else runs on Ubuntu, freeing macOS
+# slots. On macos-14 the NDK's darwin-x86_64 toolchain runs under Rosetta 2
+# (installed below); if that ever breaks, use an Intel image (macos-13).
 #
 # See docs/ios27/CI-NOTES.md for choices, measured timings and maintenance.
 # Action versions are pinned to real, long-published tags (consider re-pinning
@@ -157,7 +161,8 @@ jobs:
   # its APK; the shipped artifact is full-build's Tensor-tuned APK.
   # ---------------------------------------------------------------------------
   baseline-build:
-    runs-on: macos-14
+    # Linux: NDK linux-x86_64 toolchain, frees macOS slots for full-build.
+    runs-on: ubuntu-24.04
     env:
       # build-android.sh applies this to the deps and to QEMU.
       TUNE_CFLAGS: "-march=armv8-a"
@@ -196,11 +201,15 @@ jobs:
             "platform-tools"
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
 
-      - name: Ensure Rosetta 2 (NDK toolchain is darwin-x86_64)
-        run: softwareupdate --install-rosetta --agree-to-license || true
-
-      - name: Install host build tools (Homebrew)
-        run: brew install meson ninja pkgconf cmake
+      # Same tool versions as the macOS jobs: meson from PyPI (Ubuntu's apt
+      # meson is too old for glib 2.88), ninja/pkgconf from apt, and the
+      # runner's preinstalled CMake.
+      - name: Install host build tools (apt + pipx)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build pkgconf
+          pipx install meson==1.12.0
+          meson --version; ninja --version; cmake --version | head -1
 
       - name: Point Gradle at the SDK
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
@@ -274,7 +283,8 @@ jobs:
   # full-build to `workflow_dispatch` + a nightly `schedule`.
   # ---------------------------------------------------------------------------
   light-build:
-    runs-on: macos-14
+    # Linux: NDK linux-x86_64 toolchain, frees macOS slots for full-build.
+    runs-on: ubuntu-24.04
     # Measured ~5.5 min.
     timeout-minutes: 30
     steps:
@@ -310,11 +320,15 @@ jobs:
             "platform-tools"
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
 
-      - name: Ensure Rosetta 2 (NDK toolchain is darwin-x86_64)
-        run: softwareupdate --install-rosetta --agree-to-license || true
-
-      - name: Install host build tools (Homebrew)
-        run: brew install meson ninja pkgconf cmake
+      # Same tool versions as the macOS jobs: meson from PyPI (Ubuntu's apt
+      # meson is too old for glib 2.88), ninja/pkgconf from apt, and the
+      # runner's preinstalled CMake.
+      - name: Install host build tools (apt + pipx)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build pkgconf
+          pipx install meson==1.12.0
+          meson --version; ninja --version; cmake --version | head -1
 
       - name: Point Gradle at the SDK
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
