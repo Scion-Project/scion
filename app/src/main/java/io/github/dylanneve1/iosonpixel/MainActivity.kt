@@ -7,11 +7,13 @@ import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.os.Bundle
 import android.text.InputType
+import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
@@ -26,6 +28,9 @@ class MainActivity : Activity() {
     private lateinit var log: TextView
     private lateinit var start: Button
     private lateinit var stop: Button
+    private lateinit var importButton: Button
+    private lateinit var importStatus: TextView
+    private lateinit var importProgress: ProgressBar
 
     private lateinit var ram: EditText
     private lateinit var smp: EditText
@@ -65,8 +70,18 @@ class MainActivity : Activity() {
         root.isFocusableInTouchMode = true
         root.requestFocus()
         status = text(16f)
-        text(12f).text = "VM folder (adb push your prepared files here):\n${paths.vmDir.absolutePath}"
+        text(12f).text = "VM folder (adb push your prepared files here, or import them):\n${paths.vmDir.absolutePath}"
         checks = text(12f, mono = true)
+
+        importButton = Button(this).apply {
+            setOnClickListener {
+                if (ImportState.running) ImportService.cancel(this@MainActivity)
+                else startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_IMPORT)
+            }
+        }.also { root.addView(it, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)) }
+        importProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
+            .also { root.addView(it) }
+        importStatus = text(12f)
 
         text().text = "VM backend"
         backendGroup = RadioGroup(this).also { root.addView(it) }
@@ -125,11 +140,13 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         VmState.observe(onState)
+        ImportState.observe(onState)
         render()
     }
 
     override fun onPause() {
         VmState.unobserve(onState)
+        ImportState.unobserve(onState)
         super.onPause()
     }
 
@@ -141,7 +158,16 @@ class MainActivity : Activity() {
         val list = backend.checks()
         checks.text = list.joinToString("\n") { (if (it.ok) "✓ " else "✗ ") + it.text }
 
-        start.isEnabled = st == VmState.Status.STOPPED && list.all { it.ok }
+        val importing = ImportState.running
+        importButton.text = if (importing) "Cancel import" else "Import VM folder…"
+        importButton.isEnabled = importing || st == VmState.Status.STOPPED
+        importProgress.visibility = if (importing) View.VISIBLE else View.GONE
+        importProgress.isIndeterminate = importing && ImportState.total == 0L
+        if (ImportState.total > 0) importProgress.progress = (ImportState.copied * 1000 / ImportState.total).toInt()
+        importStatus.text = ImportState.message
+        importStatus.visibility = if (ImportState.message.isEmpty()) View.GONE else View.VISIBLE
+
+        start.isEnabled = st == VmState.Status.STOPPED && !importing && list.all { it.ok }
         stop.isEnabled = st == VmState.Status.RUNNING || st == VmState.Status.STARTING
         log.text = VmState.log()
     }
@@ -159,4 +185,15 @@ class MainActivity : Activity() {
     }
 
     private fun openDisplay() = startActivity(Intent(this, DisplayActivity::class.java))
+
+    @Deprecated("Plain framework Activity; no AndroidX result API here")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        val tree = data?.data
+        if (requestCode == REQ_IMPORT && resultCode == RESULT_OK && tree != null) ImportService.start(this, tree)
+    }
+
+    private companion object {
+        const val REQ_IMPORT = 1
+    }
 }
