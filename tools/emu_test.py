@@ -7,12 +7,15 @@ Pushes the cross-built qemu-system-aarch64 to a device over adb and runs:
     reporting which kernel patches matched and whether the kernel uses SPTM/TXM
   * boot smoke test (optional): boots a VM folder for a fixed time and checks the
     serial log for a marker such as "Darwin Kernel Version"
+  * app smoke test: installs the APK, launches it, checks the main screen, and
+    runs the bundled QEMU inside the app sandbox (needs no Apple files; CI runs it)
 
 Kernels and VM folders are your own files; this tool never downloads anything.
 
   emu_test.py patch-check ~/kernels/*kernelcache*
   emu_test.py patch-check --expect expected.json ~/kernels/*
   emu_test.py boot ~/InfernoData/phone-vm --seconds 300
+  emu_test.py app-smoke app/build/outputs/apk/debug/app-debug.apk --out smoke
 
 Exit status is non-zero on any failure or on a regression against --expect.
 """
@@ -21,11 +24,15 @@ import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_QEMU = ROOT / "app/src/main/jniLibs/arm64-v8a/libqemu-system-aarch64.so"
 DEVICE_DIR = "/data/local/tmp/ios-on-pixel-test"
+PKG = "io.github.dylanneve1.iosonpixel"
+# primaryCpuAbi -> the lib/<isa> directory the package manager extracts to.
+ABI_LIB_DIR = {"arm64-v8a": "arm64", "armeabi-v7a": "arm", "x86_64": "x86_64", "x86": "x86"}
 
 APPLIED = re.compile(r"`(.+?)` patch applied in `(.+?)`")
 MISSED = re.compile(r"`(.+?)` patch did not apply in `(.+?)`")
@@ -153,6 +160,65 @@ def cmd_boot(a):
     return 0 if found else 1
 
 
+def native_lib_dir(serial):
+    """The app's nativeLibraryDir, where the package manager extracted libqemu-system-aarch64.so."""
+    dump = adb(serial, "shell", "dumpsys", "package", PKG).stdout
+    legacy = re.search(r"legacyNativeLibraryDir=(\S+)", dump)
+    abi = re.search(r"primaryCpuAbi=(\S+)", dump)
+    if not (legacy and abi and abi.group(1) in ABI_LIB_DIR):
+        sys.exit(f"can't find {PKG}'s native library dir in `dumpsys package`")
+    return f"{legacy.group(1)}/{ABI_LIB_DIR[abi.group(1)]}"
+
+
+def cmd_app_smoke(a):
+    """Install the APK, launch MainActivity, check the main screen and the bundled QEMU."""
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    failures = []
+
+    def check(ok, what):
+        print(f"{'PASS' if ok else 'FAIL'}: {what}")
+        if not ok:
+            failures.append(what)
+
+    print("device ABIs:", adb(a.serial, "shell", "getprop", "ro.product.cpu.abilist").stdout.strip())
+    adb(a.serial, "logcat", "-c", check=False)
+    # -g grants runtime permissions, so the notification prompt doesn't cover the screen.
+    adb(a.serial, "install", "-r", "-g", str(a.apk))
+    adb(a.serial, "shell", "am", "start", "-W", "-n", f"{PKG}/.MainActivity")
+
+    xml, deadline = "", time.monotonic() + a.timeout
+    while time.monotonic() < deadline:
+        adb(a.serial, "shell", "uiautomator", "dump", "/sdcard/window_dump.xml", check=False)
+        xml = adb(a.serial, "shell", "cat", "/sdcard/window_dump.xml", check=False).stdout
+        if "Status: " in xml:
+            break
+        time.sleep(2)
+    (out / "window_dump.xml").write_text(xml)
+    check("Status: stopped" in xml, "main screen renders 'Status: stopped'")
+    check("✓ QEMU binary bundled" in xml, "checks list shows '✓ QEMU binary bundled'")
+    check(bool(adb(a.serial, "shell", "pidof", PKG, check=False).stdout.strip()), "app process is alive")
+
+    # Exec QEMU the way the app does: as the app's uid, from nativeLibraryDir (run-as needs a debug APK).
+    qemu = f"{native_lib_dir(a.serial)}/libqemu-system-aarch64.so"
+    print("bundled QEMU:", qemu)
+    ver = adb(a.serial, "shell", "run-as", PKG, qemu, "--version", check=False)
+    (out / "qemu-version.txt").write_text(ver.stdout + ver.stderr)
+    check(ver.returncode == 0 and "version" in ver.stdout.lower(), "bundled QEMU runs `--version` in the app sandbox")
+    machines = adb(a.serial, "shell", "run-as", PKG, qemu, "-M", "help", check=False)
+    (out / "qemu-machines.txt").write_text(machines.stdout + machines.stderr)
+    check(re.search(r"^t8030\b", machines.stdout, re.M) is not None, "bundled QEMU lists the t8030 machine")
+
+    shot = subprocess.run(["adb"] + (["-s", a.serial] if a.serial else []) + ["exec-out", "screencap", "-p"],
+                          capture_output=True)
+    (out / "screen.png").write_bytes(shot.stdout)
+    logcat = adb(a.serial, "logcat", "-d", check=False).stdout
+    (out / "logcat.txt").write_text(logcat)
+    check(not re.search(rf"FATAL EXCEPTION.*\n.*Process: {re.escape(PKG)}", logcat), "no crash in logcat")
+    print(f"artifacts in {out}/")
+    return 1 if failures else 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--serial", help="adb device serial (default: the only device)")
@@ -172,8 +238,13 @@ def main():
     bt.add_argument("--marker", default=r"Darwin Kernel Version", help="regex expected in the serial log")
     bt.add_argument("--log", default="serial.log", help="where to save the serial log locally")
 
+    sm = sub.add_parser("app-smoke", help="install + launch the APK, check the UI and the bundled QEMU")
+    sm.add_argument("apk", type=Path)
+    sm.add_argument("--out", default="smoke", help="folder for the UI dump, screenshot, logcat, QEMU output")
+    sm.add_argument("--timeout", type=int, default=60, help="seconds to wait for the main screen")
+
     a = ap.parse_args()
-    sys.exit(cmd_patch_check(a) if a.cmd == "patch-check" else cmd_boot(a))
+    sys.exit({"patch-check": cmd_patch_check, "boot": cmd_boot, "app-smoke": cmd_app_smoke}[a.cmd](a))
 
 
 if __name__ == "__main__":

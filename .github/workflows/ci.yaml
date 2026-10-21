@@ -242,3 +242,55 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # App smoke test on an Android emulator (issue #26). Installs the APK that
+  # full-build produced, launches MainActivity, checks that the main screen and
+  # its checks list render, and runs the bundled QEMU inside the app sandbox
+  # (`run-as`, from nativeLibraryDir, as the app does): `--version` and
+  # `-M help` must list t8030. No Apple files are involved.
+  #
+  # Runner: the APK and QEMU are arm64-only, but hosted Apple-silicon macOS
+  # runners can't nest virtualization, so there's no arm64 emulator there.
+  # Ubuntu runners have KVM, and x86_64 Google APIs images (API 30+) run arm64
+  # apps through Android's built-in ARM translation. See CI-NOTES.md.
+  # ---------------------------------------------------------------------------
+  emulator-smoke:
+    needs: full-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout (for tools/emu_test.py)
+        uses: actions/checkout@v4.2.2
+
+      - name: Download the APK from full-build
+        uses: actions/download-artifact@v4.1.8
+        with:
+          name: app-debug-apk
+          path: apk
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Boot emulator and run the app smoke test
+        uses: reactivecircus/android-emulator-runner@v2.33.0
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: python3 tools/emu_test.py app-smoke apk/app-debug.apk --out smoke
+
+      - name: Upload smoke-test evidence (UI dump, screenshot, logcat, QEMU output)
+        if: always()
+        uses: actions/upload-artifact@v4.6.0
+        with:
+          name: emulator-smoke
+          path: smoke
+          if-no-files-found: warn
+          retention-days: 14
