@@ -30,17 +30,18 @@ Tooling: `otool -h/-l`, NDK `llvm-objdump --macho`, a small Apple-DT parser.
 2. The current t8030 boot path loads only the kernel and hard-fails on any kernel
    carrying `__DATA_SPTM`/`__TEXT_BOOT_EXEC`; the handoff struct it already has
    (`AppleMonitorBootArgs`, 0x60 bytes) is the *old* monitor ABI and is far too small.
-3. SPTM is entered with `x0 → sptm_bootinfo`: a version at `+0x00` (requires ≥3),
-   fields at `+0x08/+0x10/+0x18`, and at `+0x480` a pointer to a ~0x17c0-byte shared
-   region it stamps with tag `"SPTM"`+`5`. The real struct is ≥ 0x488 bytes.
+3. SPTM is entered with `x0 → sptm_bootinfo`, which is **the XNU kernel boot-args
+   (revision 3, 0x480 bytes) followed by one pointer** at `+0x480` to a 0x17c0-byte
+   handoff region SPTM tags `"SPTM"`+`5`. That's 0x488 bytes, which SPTM copies whole
+   (§2.6, measured).
 4. SPTM→kernel ABI is visible in the kernel's `__TEXT_BOOT_EXEC` trampoline:
    `x0` = handoff selector (4 or 5), `x1` = boot-args ptr, `x2` = aux; it does
    `x0=x1; x1=x2` then enters the normal kernel `_start`.
-5. **Biggest blocker:** the 0x18…0x480 body of `sptm_bootinfo` (region descriptors +
-   page-table pool) is unmapped and gates the SPTM→kernel path. The *execution level*
-   is likely **not** a blocker: GENTER/GEXIT counts (§2.5) suggest SPTM/TXM run at the
-   guarded level Inferno's `a13_gxf.c` already models (GL1), so the **boot flow is the
-   critical path**, not new CPU state. This spec is written to hold either way.
+5. **Milestone 0 done** (dylanneve1/Inferno#2): SPTM runs from its entry, turns its MMU
+   on and walks the device tree. **Next blocker:** SPTM requires about 60 named
+   `/chosen/memory-map` image regions (`SPTM-rx`, `TXM-bx`, `BootKC-rs`, …, §2.6) that
+   iBoot publishes and Inferno doesn't yet. GL1 is enough (§2.5), so the boot flow,
+   not CPU state, is the critical path.
 
 ---
 
@@ -175,18 +176,17 @@ Confirmed `sptm_bootinfo` fields:
 
 | Offset  | Meaning (confidence)                                             |
 |---------|------------------------------------------------------------------|
-| `+0x00` | `version` u64, **must be ≥ 3** (Inferno sets 4 today for monitor)|
-| `+0x08` | consumed into `x22` — base/address used for MMU setup (OPEN)     |
-| `+0x10` | consumed into `x23` — base/address used for MMU setup (OPEN)     |
-| `+0x18` | consumed into `x24` — base/address used for MMU setup (OPEN)     |
+| `+0x00` | revision/version word, read as u64, **must be ≥ 3** (rev 3 / ver 2 → `0x20003`) |
+| `+0x08` | `virt_base` → `x22` (rounded with phys_base, as in XNU `start.s`) |
+| `+0x10` | `phys_base` → `x23` (rounded up to 32 MiB)                       |
+| `+0x18` | `mem_size`  → `x24` (reduced by the rounding delta)              |
+| `+0x60` | `deviceTreeP` (VA in the virt_base frame), `+0x68` `deviceTreeLength` |
+| `+0x20…0x480` | the rest of the XNU boot-args rev 3 (`AppleKernelBootArgsRev3`) |
 | `+0x480`| pointer to a ≥0x17c0-byte shared handoff/telemetry region        |
-| …       | `0x20`…`0x480` body: region descriptors + PT pool (OPEN)         |
 
-Key conclusion: the real struct is **≥ 0x488 bytes** — an order of magnitude larger
-than `AppleMonitorBootArgs`. The `0x20…0x480` gap almost certainly carries the
-phys/virt/size descriptors for SPTM, TXM, the kernel, the device tree, the kernel
-boot-args, and the pre-allocated page-table pool. That body must be reverse-engineered
-(see OPEN-1).
+Key conclusion (resolved in §2.6): the struct is exactly **0x488 bytes**, the kernel
+boot-args rev 3 plus the handoff pointer. Region descriptors are *not* in it. SPTM
+gets those from the device tree's `/chosen/memory-map` instead.
 
 The shared region at `+0x480` (tag `"SPTM"`, version `5`) is a runtime SPTM↔kernel
 rendezvous page; the emulator only has to supply a valid, zeroed, writable buffer
@@ -268,6 +268,47 @@ Consequences for the hand-off (this is the whole point):
   (SPTM's exception vectors read `S3_6_C15_C8_0`) until the GXF branch (`ios27/gxf`)
   adds them — expected; note and continue.
 
+### 2.6 Measured on the emulator (Milestone 0, dylanneve1/Inferno#2)
+
+Real 27.0.1 SPTM/TXM/kernel/DT/restore trustcache, on the Android emulator, traced with
+`-d in_asm,exec,int`. Facts established by running SPTM, each cross-checked against the
+disassembly:
+
+- **Boot info = kernel boot-args (rev 3) + handoff pointer.** At `0x…a9d68` SPTM copies
+  exactly `0x488` bytes of the boot info into its data. Its DT routine reads a u64 at
+  `+0x60` and a u32 at `+0x68`, which are `deviceTreeP`/`deviceTreeLength`.
+  `AppleKernelBootArgsRev3` is `0x480` bytes, compiler-checked. With a zero DT pointer
+  SPTM halts in the DT walk (`mov x0,#0x9898; b .`). With the kernel's boot-args in
+  SPTM's VA frame it walks the tree.
+- **Handoff CPU state: FP/SIMD must be enabled at EL1** (`CPACR_EL1.FPEN = 0b11`). SPTM's
+  `memcpy` uses `ldnp/stnp q…`, and SPTM never writes `CPACR_EL1`, so the bootloader must
+  leave it enabled. Without it, SPTM takes an FP trap (EC 0x07) right after enabling its
+  MMU. XNU never needed this because the kernel enables FP itself.
+- **Placement:** SPTM's PA must be congruent to its link VA mod 32 MiB (its `start.s`-style
+  rounding). Measured layout: SPTM text at `0x807004000`, virt_base `0xfffffff020000000`.
+- **Progress:** 71 blocks at PA with the MMU off, then 278 at SPTM link VAs, no exceptions.
+  Then the panic below.
+- **Next contract, `/chosen/memory-map` image regions.** SPTM's `init_get_image_region`
+  (format `"%s: error %d looking up image region '%s'"`) panics when a required region is
+  missing. The first it asks for is `BootKC-rs`. Required names seen at its call sites:
+  - `SPTM-{ro,rx,rw,le}`
+  - `TXM-{ro,rx,bx,rw,le,entry,virt}`
+  - `BootKC-{ro,rs,rx,bx,rw,le,entry,virt}`
+  - `AuxKC-{ro,rw,le}`
+  - `CL4-{ro,rx,rw,le,entry,virt}`
+  - `DeviceTree`, `TrustCache`, `BootArgs`, `slide`
+
+  The suffixes line up with the segments in §1: `bx` = `__TEXT_BOOT_EXEC` (TXM, kernel),
+  `rs` plausibly = the kernel's `__DATA_SPTM`, `le` plausibly = `__LINKEDIT`. Inferno
+  currently injects only `Kernel-<segment>` names. See OPEN-1 and OPEN-7.
+
+Environment notes:
+- On the Android emulator, `-smp 7` with real-SEP mode OOMs before boot for *any*
+  kernel. QEMU builds tens of thousands of 16 KiB subpages, Scudo maps each one, and the
+  process hits `vm.max_map_count`. `-smp 2`/`4` work.
+- `tools/emu_test.py boot` needs `id=<name>` on each NVMe namespace, since t8030 resolves
+  `peripheral/firmware`.
+
 ---
 
 ## 3. Physical / virtual memory reservation
@@ -322,7 +363,12 @@ decompressed Mach-O directly, and/or the IM4P — IM4P type 4CCs are **`sptm`** 
 **`trxm`**, so `apple_boot_load_kernel`'s type check must be generalized or a sibling
 added). Firmware stays read-only research input.
 
-### Milestone 0 — "SPTM starts executing" (minimum)
+### Milestone 0 — "SPTM starts executing" (minimum) — **DONE** (dylanneve1/Inferno#2)
+
+As implemented: SPTM loads via master's `apple_boot_load_monitor(…, "sptm")` and maps via
+`t8030_map_monitor()`. The boot info is built from `apple_boot_setup_bootargs()` plus the
+handoff pointer, and the handoff sets `CPACR_EL1.FPEN`. The steps below are the original
+plan, kept for reference; §2.6 supersedes step 3.
 
 Goal: CPU0 enters SPTM `_start`, passes the `version ≥ 3` gate, and self-relocates /
 begins MMU setup. It is acceptable for it to later fault once it needs the real region
@@ -356,8 +402,9 @@ descriptors — getting it *executing* is the milestone.
 
 ### Milestone 1 — SPTM reaches the kernel
 
-1. Reverse the `sptm_bootinfo` body `0x20…0x480` (OPEN-1) and populate real region
-   descriptors (SPTM/TXM/kernel phys+virt+size, DT, kernel boot-args, PT pool).
+1. Publish the `/chosen/memory-map` image regions SPTM requires (§2.6) from the SPTM,
+   TXM and kernel segments, plus `DeviceTree`/`TrustCache`/`BootArgs`/`slide`. Start with
+   `BootKC-rs`, the first lookup, and iterate on the next panic.
 2. Fill the TXM arg struct (OPEN-2) so SPTM's TXM launch succeeds.
 3. Verify SPTM enters `kern_entry` with `x0 ∈ {4,5}`, `x1 = kern_boot_args_addr`,
    `x2 = aux`. Since the kernel trampoline does `x0=x1; x1=x2`, the existing rev3
@@ -382,11 +429,11 @@ Draft C skeletons for Milestone 0 live in `docs/ios27/drafts/` (see below).
 
 ## 5. OPEN questions (each with how to resolve)
 
-- **OPEN-1 — `sptm_bootinfo` body `0x20…0x480`.** Need the full field map (region
-  descriptors, PT pool base/size, kernel entry/args, DT). *Resolve:* continue the
-  `_start` disassembly past `0x…9b0c0` and cross-reference the kernel's `__DATA_SPTM`
-  consumer glue; compare against the public SPTM layout once Gaia lands. Highest-value
-  unknown — it gates Milestone 1.
+- **OPEN-1 — memory-map region semantics** (was: boot-info body; resolved in §2.6).
+  For each required region: whether it's a `{paddr, size}` pair like `Kernel-<seg>`, how
+  the suffixes map to segments (`rs`, `le`, `bx`), and what `-entry`/`-virt`/`slide` hold.
+  *Resolve:* follow each `init_get_image_region` caller and see how it uses the returned
+  pair (the first reads `[x0]` as a PA), then add the regions one panic at a time.
 - **OPEN-2 — TXM boot-arg struct.** Layout TXM reads from `x0` at `0x…84060`.
   *Resolve:* trace the `__bootcode` `ldp/ldr/str` copy sequence and map each source
   offset; correlate with what SPTM writes before launching TXM.
@@ -407,6 +454,10 @@ Draft C skeletons for Milestone 0 live in `docs/ios27/drafts/` (see below).
 - **OPEN-6 — SEP dependency.** Whether SPTM/TXM bring-up needs a valid SEP/`txm-secure-channel`
   before the kernel mounts root (per `docs/IOS27.md` §4, no 27 SEP key is sourced).
   *Resolve:* bring SPTM to the kernel trampoline first; observe where it blocks.
+- **OPEN-7 — `AuxKC` and `CL4` regions.** SPTM requires them, but no matching image is
+  loaded today. `AuxKC` is presumably the auxiliary kernel collection, and `CL4` is
+  unidentified (the DT has `cl4-entropy`). *Resolve:* check the 27.0.1 BuildManifest for
+  matching components, and whether zero-sized regions are accepted.
 
 ---
 
