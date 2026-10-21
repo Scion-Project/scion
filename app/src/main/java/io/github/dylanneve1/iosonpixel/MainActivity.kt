@@ -104,7 +104,7 @@ class MainActivity : Activity() {
             (if (avf.hasPermission) "✓" else "✗") + " MANAGE_VIRTUAL_MACHINE granted"
 
         ram = field("Guest RAM (GiB)", s.ramGb.toString())
-        smp = field("vCPUs (6 application cores + 1 SEP)", s.smp.toString())
+        smp = field("vCPUs (application cores + 1 SEP; 7 matches the iPhone 11)", s.smp.toString())
         tbSize = field("JIT translation cache (MiB)", s.tbSizeMb.toString())
         affinity = field("vCPU → Tensor G5 core pinning (';' per vCPU, empty = off)", s.vcpuAffinity, numeric = false)
         splitWx = Switch(this).apply {

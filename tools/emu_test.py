@@ -132,17 +132,17 @@ def cmd_boot(a):
     drives = [f"-drive file=sep_nvram,if=pflash,format=raw,file.locking=off",
               f"-drive file=sep_ssc,if=pflash,format=raw,file.locking=off",
               f"-drive file={props['root']},format={props.get('root_format', 'raw')},if=none,id=root,file.locking=off "
-              f"-device nvme-ns,drive=root,bus=nvme-bus.0,nsid=1,nstype=1,"
+              f"-device nvme-ns,drive=root,bus=nvme-bus.0,nsid=1,nstype=1,id=root,"
               f"logical_block_size=4096,physical_block_size=4096"]
     for name, nsid, nstype, dev in [("firmware", 2, 2, "nvme-ns"), ("syscfg", 3, 3, "nvme-ns"),
                                     ("ctrl_bits", 4, 4, "nvme-ns"), ("nvram", 5, 5, "apple-nvram"),
                                     ("effaceable", 6, 6, "nvme-ns"), ("panic_log", 7, 8, "nvme-ns")]:
-        extra = f"id={name}," if dev == "apple-nvram" else ""
+        # Inferno dev looks namespaces up by id (e.g. peripheral/firmware).
         drives.append(f"-drive file={name},format=raw,if=none,id={name},file.locking=off "
-                      f"-device {dev},drive={name},bus=nvme-bus.0,nsid={nsid},nstype={nstype},{extra}"
+                      f"-device {dev},drive={name},bus=nvme-bus.0,nsid={nsid},nstype={nstype},id={name},"
                       f"logical_block_size=4096,physical_block_size=4096")
     cmd = (f"cd {DEVICE_DIR}/vm && timeout {a.seconds} ../qemu -M {machine} -kernel {props['kernel']} "
-           f"-dtb {props['dtb']} -smp 7 -m 4G -display none -serial file:{DEVICE_DIR}/serial.log "
+           f"-dtb {props['dtb']} -smp {a.smp} -m 4G -display none -serial file:{DEVICE_DIR}/serial.log "
            + " ".join(drives) + " > ../qemu.log 2>&1; echo exit=$?")
     print(adb(a.serial, "shell", cmd, check=False).stdout.strip())
     log = adb(a.serial, "shell", f"cat {DEVICE_DIR}/serial.log", check=False).stdout
@@ -168,6 +168,7 @@ def main():
     bt = sub.add_parser("boot", help="boot smoke test of a packaged VM folder")
     bt.add_argument("vm", help="folder from tools/package_vm.py")
     bt.add_argument("--seconds", type=int, default=300)
+    bt.add_argument("--smp", type=int, default=4, help="vCPUs; 7 currently exhausts Android's mapping limit (#33)")
     bt.add_argument("--marker", default=r"Darwin Kernel Version", help="regex expected in the serial log")
     bt.add_argument("--log", default="serial.log", help="where to save the serial log locally")
 
