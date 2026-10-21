@@ -20,7 +20,7 @@ Inferno is the active successor: last push Sep 2026, ~4k stars.
 
 ## Moving to Inferno `dev` (2026-10-21)
 
-The submodule tracks `dylanneve1/Inferno@pixel-dev`: upstream `dev` (314
+The submodule tracks `dylanneve1/Inferno@master`, our main line (fast-forwarded from `pixel-dev`): upstream `dev` (314
 commits past `master`) with our Android/Tensor patches rebased on top. `dev`
 is a large restructure, and several things the old notes relied on are gone:
 
