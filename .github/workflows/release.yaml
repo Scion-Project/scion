@@ -1,0 +1,176 @@
+# Continuous delivery: build the app and publish a GitHub Release on version tags.
+#
+# Trigger:
+#   * push of a tag matching `v*` (e.g. v0.1.0) -> builds the real app-debug.apk
+#     the same way as CI's `full-build` job and attaches it to a GitHub Release
+#     with auto-generated notes.
+#   * workflow_dispatch -> manual run with a `dry_run` input (default true). A
+#     dry run performs the full build and the APK checks but does NOT create a
+#     release or a tag; it only uploads the APK as a run artifact and prints
+#     what it would have released. Use this to test the pipeline without pushing
+#     a real tag.
+#
+# The build half is intentionally identical to `full-build` in ci.yaml (same
+# runner, NDK, SDK, caches and steps); see ci.yaml / CI-NOTES.md for why macOS
+# and these pins are required. The APK contains only our own code plus GPL/AGPL
+# QEMU and ships no Apple files, so publishing it is fine (docs/ETHICS.md).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify the APK but do not create a release (test the pipeline)."
+        type: boolean
+        default: true
+
+# One release build per ref at a time.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# `contents: write` is needed to create the Release and upload the asset. On a
+# dry run nothing is written (the release step is skipped), but the token scope
+# is set at the job level regardless.
+permissions:
+  contents: write
+
+env:
+  # Kept in lockstep with ci.yaml.
+  ANDROID_NDK_VERSION: "28.2.13676358"
+  ANDROID_PLATFORM: "platforms;android-36"
+  ANDROID_BUILD_TOOLS: "build-tools;36.0.0"
+
+jobs:
+  release:
+    runs-on: macos-14
+    # Same budget as ci.yaml's full-build: deps (~10 min cold) + QEMU cross-build
+    # + gradle. Hosted macOS runners are slower than a dev Mac.
+    timeout-minutes: 150
+    steps:
+      # ----- build half: identical to ci.yaml `full-build` -------------------
+      - name: Checkout (with the Inferno submodule)
+        uses: actions/checkout@v4.2.2
+        with:
+          submodules: true
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4.7.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3.2.2
+        with:
+          packages: platform-tools
+
+      - name: Install NDK r28 + platform + build-tools
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            "ndk;${ANDROID_NDK_VERSION}" \
+            "$ANDROID_PLATFORM" \
+            "$ANDROID_BUILD_TOOLS" \
+            "platform-tools"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Ensure Rosetta 2 (NDK toolchain is darwin-x86_64)
+        run: softwareupdate --install-rosetta --agree-to-license || true
+
+      - name: Install host build tools (Homebrew)
+        run: brew install meson ninja pkgconf cmake
+
+      - name: Point Gradle at the SDK
+        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+
+      # Caches shared with ci.yaml (same keys), so a release build reuses the
+      # sysroot/deps a CI run already warmed.
+      - name: Cache dependency tarballs
+        uses: actions/cache@v4.2.0
+        with:
+          path: native/build/dl
+          key: deps-dl-${{ runner.os }}-${{ hashFiles('native/build-android.sh') }}
+
+      - name: Cache static sysroot
+        id: sysroot-cache
+        uses: actions/cache@v4.2.0
+        with:
+          path: native/build/sysroot
+          key: deps-sysroot-${{ runner.os }}-${{ hashFiles('native/build-android.sh') }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4.2.2
+
+      - name: Build static deps (skipped on sysroot cache hit)
+        if: steps.sysroot-cache.outputs.cache-hit != 'true'
+        run: native/build-android.sh deps
+
+      - name: Build QEMU (cross-build)
+        run: native/build-android.sh qemu
+
+      - name: Assemble debug APK
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Verify build outputs exist
+        run: |
+          so=app/src/main/jniLibs/arm64-v8a/libqemu-system-aarch64.so
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          test -f "$so"  || { echo "missing native library: $so"; exit 1; }
+          test -f "$apk" || { echo "missing APK: $apk"; exit 1; }
+          ls -lh "$so" "$apk"
+
+      # Always keep the APK as a run artifact (the only output on a dry run).
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4.6.0
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      # ----- release half ----------------------------------------------------
+      # Real release: only on a pushed tag, or a manual run explicitly opting out
+      # of dry-run (which must itself be launched from a tag ref).
+      - name: Create GitHub Release and attach APK
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/*) ;;
+            *)
+              echo "::error::Release requested but '$GITHUB_REF' is not a tag."
+              echo "Push a tag matching v*, or dispatch from a tag ref with dry_run=false."
+              exit 1
+              ;;
+          esac
+          tag="$GITHUB_REF_NAME"
+          echo "Creating release $tag"
+          gh release create "$tag" \
+            app/build/outputs/apk/debug/app-debug.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$tag" \
+            --generate-notes
+
+      # Dry run: say what would have happened, verify the asset, create nothing.
+      - name: Dry run summary (no release created)
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run != false
+        run: |
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          {
+            echo "## Release dry run"
+            echo ""
+            echo "No release or tag was created."
+            echo ""
+            echo "On a \`v*\` tag push this would run \`gh release create <tag>\` with:"
+            echo "- asset: \`$apk\` ($(du -h "$apk" | cut -f1))"
+            echo "- notes: auto-generated (\`--generate-notes\`)"
+            echo ""
+            echo "The APK is attached to this run as the \`app-debug-apk\` artifact."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "DRY RUN complete: built and verified $apk; no release created."
