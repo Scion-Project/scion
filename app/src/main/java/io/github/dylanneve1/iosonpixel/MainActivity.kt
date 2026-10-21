@@ -3,6 +3,7 @@ package io.github.dylanneve1.iosonpixel
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.os.Bundle
@@ -163,13 +164,15 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
         }
 
-        // Developer hook (DisplayActivity isn't exported):
+        // Developer hooks. This activity is exported, so only honour them in debuggable builds.
+        val debuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        // DisplayActivity isn't exported:
         //   adb shell am start -n <pkg>/.MainActivity --ez attach true
-        if (intent.getBooleanExtra(DisplayActivity.EXTRA_ATTACH, false)) {
+        if (debuggable && intent.getBooleanExtra(DisplayActivity.EXTRA_ATTACH, false)) {
             startActivity(Intent(this, DisplayActivity::class.java).putExtra(DisplayActivity.EXTRA_ATTACH, true))
         }
-        // Developer hook: shared vs internal storage throughput, logged (see StorageBench).
-        if (intent.getBooleanExtra("storage_bench", false)) {
+        // Shared vs internal storage throughput, logged (see StorageBench).
+        if (debuggable && intent.getBooleanExtra("storage_bench", false)) {
             val mb = intent.getIntExtra("storage_bench_mb", 100).coerceIn(1, 1024)
             Thread({ StorageBench.run(applicationContext, mb) }, "storage-bench").start()
         }
