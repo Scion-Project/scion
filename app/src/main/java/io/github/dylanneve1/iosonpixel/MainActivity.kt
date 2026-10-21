@@ -9,6 +9,8 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -54,6 +56,7 @@ class MainActivity : Activity() {
     private lateinit var smp: EditText
     private lateinit var tbSize: EditText
     private lateinit var affinity: EditText
+    private lateinit var pinning: TextView
     private lateinit var splitWx: Switch
     private lateinit var inProcess: Switch
     private lateinit var backendGroup: RadioGroup
@@ -194,8 +197,18 @@ class MainActivity : Activity() {
 
         affinity = ui.field(
             advanced, "vCPU → Tensor G5 core pinning", s.vcpuAffinity,
-            help = "One CPU list per vCPU, separated by ';'. Empty = off.", numeric = false,
+            help = "auto = derived from the vCPU count. Or one CPU list per vCPU, separated by ';'. Empty = off.",
+            numeric = false,
         )
+        pinning = ui.text(12f, Ui.MUTED, mono = true).also { advanced.addView(it, ui.lp(top = 6)) }
+        // Show what auto (or the override) resolves to as the fields are edited.
+        val showPinning = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(e: Editable?) = renderPinning()
+        }
+        smp.addTextChangedListener(showPinning)
+        affinity.addTextChangedListener(showPinning)
         splitWx = switch(advanced, "Split W^X JIT mapping", "Try this if QEMU fails to allocate its code buffer.", s.splitWx)
         inProcess = switch(
             advanced, "Run QEMU in-process",
@@ -226,6 +239,8 @@ class MainActivity : Activity() {
                 (if (avf.hasFeature) "✓" else "✗") + " this device advertises ${AvfSupport.FEATURE}\n" +
                 (if (avf.hasPermission) "✓" else "✗") + " MANAGE_VIRTUAL_MACHINE granted"
         }, ui.lp(top = 4))
+
+        renderPinning()
 
         // Open the advanced section if anything in it is set away from its default.
         val d = VmSettings()
@@ -386,9 +401,17 @@ class MainActivity : Activity() {
     /** The move button's direction: into internal storage unless the VM is already there and nothing newer is in shared. */
     private fun moveToInternal() = !paths.vmInternal || File(paths.sharedVmDir, VmLayout.MANIFEST).isFile
 
-    private fun saveSettings() {
+    private fun renderPinning() {
+        val p = formSettings().effectiveVcpuAffinity
+        pinning.text = "QEMU_VCPU_AFFINITY = " + p.ifBlank { "(off)" }
+    }
+
+    private fun saveSettings() = formSettings().save(this)
+
+    /** The settings as currently entered on screen. */
+    private fun formSettings(): VmSettings {
         val d = VmSettings()
-        VmSettings(
+        return VmSettings(
             ramGb = ram.text.toString().toIntOrNull()?.coerceIn(1, 12) ?: d.ramGb,
             smp = smp.text.toString().toIntOrNull()?.coerceIn(1, 8) ?: d.smp,
             tbSizeMb = tbSize.text.toString().toIntOrNull()?.coerceIn(64, 4096) ?: d.tbSizeMb,
@@ -396,7 +419,7 @@ class MainActivity : Activity() {
             inProcess = inProcess.isChecked,
             vcpuAffinity = affinity.text.toString().trim(),
             backend = Backend.entries.firstOrNull { it.ordinal + 1 == backendGroup.checkedRadioButtonId } ?: d.backend,
-        ).save(this)
+        )
     }
 
     private fun openDisplay() = startActivity(Intent(this, DisplayActivity::class.java))

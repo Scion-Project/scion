@@ -148,7 +148,7 @@ The settings on the main screen are saved when you tap **Start**:
 | Guest RAM (GiB) | 4 | 1–12 |
 | vCPUs | **4** | **Keep it at 4 for now** (3 application cores + 1 SEP core). 7 matches the real iPhone 11 but currently aborts on Android ([#33](https://github.com/dylanneve1/ios-on-pixel/issues/33)) |
 | JIT translation cache (MiB) | 1024 | 64–4096 |
-| vCPU → Tensor G5 core pinning | `2-7;2-7;2-7;2-7;2-7;2-7;0-1` | one cpu-set per vCPU, `;`-separated, the last one repeats; empty turns pinning off |
+| vCPU → Tensor G5 core pinning | `auto` | `auto` derives it from the vCPU count (application vCPUs → `2-7`, SEP vCPU → `0-1`; the effective string is shown under the field). Or one cpu-set per vCPU, `;`-separated, the last one repeats. Empty turns pinning off |
 | Split W^X JIT mapping | off | try it only if QEMU fails to allocate its code buffer |
 
 Tap **Start**. The status goes *starting → running*, the notification
