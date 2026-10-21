@@ -117,18 +117,38 @@ EOF
 # its Linux code paths (gettid, tgkill, sysfs, ...) when meson reports linux.
 sed "s/^system = 'android'/system = 'linux'/" "$WORK/android-arm64.cross" > "$WORK/android-arm64-qemu.cross"
 
+download() { # url out; never leaves a partial file behind
+  curl -fL --retry 5 --retry-all-errors --retry-delay 3 -o "$2" "$1" || { rm -f "$2"; return 1; }
+}
+
 fetch() { # url sha256 -> path of the downloaded file
-  local url="$1" sum="$2" out="$WORK/dl/${1##*/}"
-  [[ -f "$out" ]] || curl -fL --retry 3 -o "$out" "$url"
-  echo "$sum  $out" | shasum -a 256 -c - >/dev/null || { echo "checksum mismatch: $out" >&2; exit 1; }
+  local url="$1" sum="$2" out="$WORK/dl/${1##*/}" rel
+  if [[ ! -f "$out" ]] && ! download "$url" "$out"; then
+    # ftpmirror.gnu.org redirects to a random mirror, and some mirrors have
+    # broken TLS. Fall back to the GNU master site (same file, same checksum).
+    [[ "$url" == https://ftpmirror.gnu.org/* ]] || { echo "download failed: $url" >&2; return 1; }
+    rel="${url#https://ftpmirror.gnu.org/}"; rel="${rel#gnu/}"
+    echo "mirror failed, retrying from ftp.gnu.org: $rel" >&2
+    download "https://ftp.gnu.org/gnu/$rel" "$out" || { echo "download failed: $url" >&2; return 1; }
+  fi
+  echo "$sum  $out" | shasum -a 256 -c - >/dev/null || { echo "checksum mismatch: $out" >&2; rm -f "$out"; return 1; }
   echo "$out"
 }
 
-unpack() { # archive -> fresh source dir under $WORK/src
+unpack() { # archive name -> fresh source dir under $WORK/src
   local dir="$WORK/src/$2"
-  rm -rf "$dir" && mkdir -p "$dir"
-  tar -xf "$1" -C "$dir" --strip-components=1
+  { rm -rf "$dir" && mkdir -p "$dir" && tar -xf "$1" -C "$dir" --strip-components=1; } \
+    || { echo "unpack failed: $1" >&2; return 1; }
   echo "$dir"
+}
+
+# Command substitutions don't inherit `set -e` (and macOS bash 3.2 has no
+# inherit_errexit), so check each step explicitly: a failed download must stop
+# the build here, not later at `./configure: No such file or directory`.
+source_dir() { # url sha256 name -> fresh, unpacked source dir
+  local tb
+  tb="$(fetch "$1" "$2")" || return 1
+  unpack "$tb" "$3"
 }
 
 autotools_env() {
@@ -136,15 +156,15 @@ autotools_env() {
 }
 
 build_gmp() {
-  local s; s="$(unpack "$(fetch https://ftpmirror.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz \
-    a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898)" gmp)"
+  local s; s="$(source_dir https://ftpmirror.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz \
+    a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898 gmp)" || exit 1
   (cd "$s" && autotools_env && ./configure --host="$TRIPLE" --prefix="$PREFIX" \
      --enable-static --disable-shared --disable-cxx && make -j"$JOBS" && make install)
 }
 
 build_nettle() {
-  local s; s="$(unpack "$(fetch https://ftpmirror.gnu.org/gnu/nettle/nettle-3.10.2.tar.gz \
-    fe9ff51cb1f2abb5e65a6b8c10a92da0ab5ab6eaf26e7fc2b675c45f1fb519b5)" nettle)"
+  local s; s="$(source_dir https://ftpmirror.gnu.org/gnu/nettle/nettle-3.10.2.tar.gz \
+    fe9ff51cb1f2abb5e65a6b8c10a92da0ab5ab6eaf26e7fc2b675c45f1fb519b5 nettle)" || exit 1
   (cd "$s" && autotools_env && ./configure --host="$TRIPLE" --prefix="$PREFIX" --libdir="$PREFIX/lib" \
      --enable-static --disable-shared --disable-documentation --disable-openssl \
      --enable-arm64-crypto --with-include-path="$PREFIX/include" --with-lib-path="$PREFIX/lib" \
@@ -152,24 +172,24 @@ build_nettle() {
 }
 
 build_tasn1() {
-  local s; s="$(unpack "$(fetch https://ftpmirror.gnu.org/libtasn1/libtasn1-4.21.0.tar.gz \
-    1d8a444a223cc5464240777346e125de51d8e6abf0b8bac742ac84609167dc87)" libtasn1)"
+  local s; s="$(source_dir https://ftpmirror.gnu.org/libtasn1/libtasn1-4.21.0.tar.gz \
+    1d8a444a223cc5464240777346e125de51d8e6abf0b8bac742ac84609167dc87 libtasn1)" || exit 1
   (cd "$s" && autotools_env && ./configure --host="$TRIPLE" --prefix="$PREFIX" --libdir="$PREFIX/lib" \
      --enable-static --disable-shared --disable-doc --disable-valgrind-tests \
      && make -j"$JOBS" -C lib && make -C lib install)
 }
 
 build_lz4() {
-  local s; s="$(unpack "$(fetch https://github.com/lz4/lz4/archive/refs/tags/v1.10.0.tar.gz \
-    537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b)" lz4)"
+  local s; s="$(source_dir https://github.com/lz4/lz4/archive/refs/tags/v1.10.0.tar.gz \
+    537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b lz4)" || exit 1
   (cd "$s/lib" && make -j"$JOBS" liblz4.a liblz4.pc CC="$CC" AR="$AR" CFLAGS="$OPT_CFLAGS" \
        PREFIX="$PREFIX" LIBDIR="$PREFIX/lib" \
      && make install BUILD_SHARED=no PREFIX="$PREFIX" LIBDIR="$PREFIX/lib")
 }
 
 build_lzfse() {
-  local s; s="$(unpack "$(fetch https://github.com/lzfse/lzfse/archive/refs/tags/lzfse-1.0.tar.gz \
-    cf85f373f09e9177c0b21dbfbb427efaedc02d035d2aade65eb58a3cbf9ad267)" lzfse)"
+  local s; s="$(source_dir https://github.com/lzfse/lzfse/archive/refs/tags/lzfse-1.0.tar.gz \
+    cf85f373f09e9177c0b21dbfbb427efaedc02d035d2aade65eb58a3cbf9ad267 lzfse)" || exit 1
   (cd "$s" && for f in src/lzfse_*.c src/lzvn_*.c; do
        "$CC" $OPT_CFLAGS -Isrc -c "$f" -o "${f%.c}.o"; done \
      && "$AR" rcs "$PREFIX/lib/liblzfse.a" src/lzfse_*.o src/lzvn_*.o \
@@ -188,8 +208,8 @@ meson_dep() { # srcdir [meson args...]
 }
 
 build_glib() {
-  local s; s="$(unpack "$(fetch https://download.gnome.org/sources/glib/2.88/glib-2.88.4.tar.xz \
-    25fd169f3b2f91fe2391ad297883ce0fcf30c69fc789ffd1c9672d1332b1c5a8)" glib)"
+  local s; s="$(source_dir https://download.gnome.org/sources/glib/2.88/glib-2.88.4.tar.xz \
+    25fd169f3b2f91fe2391ad297883ce0fcf30c69fc789ffd1c9672d1332b1c5a8 glib)" || exit 1
   meson_dep "$s" -Dtests=false -Dintrospection=disabled -Dnls=disabled -Dselinux=disabled \
     -Dxattr=false -Dlibmount=disabled -Dman-pages=disabled -Ddocumentation=false \
     -Dsysprof=disabled -Dlibelf=disabled -Dglib_debug=disabled -Dglib_assert=false \
@@ -197,8 +217,8 @@ build_glib() {
 }
 
 build_pixman() {
-  local s; s="$(unpack "$(fetch https://www.cairographics.org/releases/pixman-0.46.4.tar.xz \
-    a098c33924754ad43f981b740f6d576c70f9ed1006e12221b1845431ebce1239)" pixman)"
+  local s; s="$(source_dir https://www.cairographics.org/releases/pixman-0.46.4.tar.xz \
+    a098c33924754ad43f981b740f6d576c70f9ed1006e12221b1845431ebce1239 pixman)" || exit 1
   meson_dep "$s" -Dtests=disabled -Ddemos=disabled -Dgtk=disabled -Dlibpng=disabled \
     -Da64-neon=enabled -Darm-simd=disabled -Dneon=disabled
 }
