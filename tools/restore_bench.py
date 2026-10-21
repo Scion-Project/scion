@@ -58,9 +58,10 @@ NVME = [("root", 1 << 30, 1, 1, "nvme-ns"), ("firmware", 8 << 20, 2, 2, "nvme-ns
         ("nvram", 8 << 10, 5, 5, "apple-nvram"), ("effaceable", 4 << 10, 6, 6, "nvme-ns"),
         ("panic_log", 1 << 20, 7, 8, "nvme-ns")]
 PFLASH = [("sep_nvram", 64 << 10), ("sep_ssc", 128 << 10)]
-# Unique process name: the run is stopped with `kill $(pidof QEMU_NAME)`, never a
-# pattern kill (pkill -f can match the adb shell itself, or other users' processes).
+# The run is stopped through QEMU's own -pidfile, never by name or pattern: pkill -f can
+# match the adb shell itself, and other people may run this tool on the same device.
 QEMU_NAME = "qemu-restore-bench"
+UPLINK_PORTS = range(18030, 18100)
 APPEND = ("tlto_us=-1 mtxspin=-1 agm-genuine=1 agm-authentic=1 agm-trusted=1 "
           "serial=3 wdt=-1 -vm_compressor_wk_sw")
 
@@ -119,14 +120,14 @@ class Device:
             self.adb("push", "-q", str(local), remote, timeout=1800)
 
 
-def qemu_command(a, d, extra=()):
+def qemu_command(a, d, uplink, extra=()):
     machine = ",".join([
         "t8030", "trustcache=trustcache", "sep-fw=sep_fw", "sep-rom=sep_rom", "kaslr-off=true",
-        f"usb-uplink-addr={a.uplink}"])
+        f"usb-uplink-addr={uplink}"])
     args = [f"{d}/{QEMU_NAME}", "-M", machine, "-accel", f"tcg,thread=multi,tb-size={a.tb_size}",
             "-kernel", "kernel", "-dtb", "dtb", "-initrd", "ramdisk", "-append", APPEND,
             "-smp", str(a.smp), "-m", a.ram, "-display", "none", "-monitor", "none",
-            "-serial", "stdio", "-snapshot",
+            "-serial", "stdio", "-snapshot", "-pidfile", f"{d}/qemu.pid",
             "-drive", "file=sep_nvram,if=pflash,format=raw,file.locking=off",
             "-drive", "file=sep_ssc,if=pflash,format=raw,file.locking=off", *extra]
     for name, _, nsid, nstype, dev in NVME:
@@ -136,19 +137,19 @@ def qemu_command(a, d, extra=()):
     return args
 
 
-def run_script(a, d, wrap="", extra=()):
+def run_script(a, d, uplink, wrap="", extra=()):
     """Device-side script: start QEMU, stamp each serial line with /proc/uptime on
     arrival, stop QEMU once restore mode is waiting for a host (or on timeout).
     Uses a pipe: the adb shell user may not create FIFOs under /data/local/tmp."""
-    cmd = " ".join(shlex.quote(x) for x in qemu_command(a, d, extra))
+    cmd = " ".join(shlex.quote(x) for x in qemu_command(a, d, uplink, extra))
     return f"""
 cd {d} || exit 1
-rm -f serial.stamped qemu.err
+rm -f serial.stamped qemu.err qemu.pid
 read t0 _ < /proc/uptime; echo "$t0 @start" > serial.stamped
 timeout {a.timeout} {wrap} {cmd} 2> qemu.err < /dev/null | while IFS= read -r line; do
   read up _ < /proc/uptime; echo "$up $line" >> serial.stamped
   case "$line" in *"waiting for host to trigger start of restore"*)
-    kill -INT $(pidof {QEMU_NAME}) 2>/dev/null ;; esac
+    kill -INT $(cat {d}/qemu.pid 2>/dev/null) 2>/dev/null ;; esac
 done
 read t1 _ < /proc/uptime; echo "@wall $t0 $t1"; times
 """
@@ -192,9 +193,22 @@ def parse(stamped):
 
 
 def other_qemus(dev, d):
-    """Other t8030 instances on the device (they compete for CPU and skew timings)."""
+    """Other t8030 instances on the device (they compete for CPU and skew timings).
+    Called between runs, when none of ours is running, so every match is someone else's."""
     out = dev.sh("ps -A -o PID,ARGS 2>/dev/null | grep -E 'qemu.*t8030' | grep -v grep", check=False).stdout
-    return [l.strip() for l in out.splitlines() if QEMU_NAME not in l and l.strip()]
+    return [l.strip() for l in out.splitlines() if l.strip()]
+
+
+def pick_uplink(a, dev):
+    """The USB uplink address for the next run: --uplink, or the first free port in UPLINK_PORTS."""
+    if a.uplink != "auto":
+        return a.uplink
+    out = dev.sh("ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null", check=False).stdout
+    used = {int(p) for p in re.findall(r"127\.0\.0\.1:(\d+)\s", out)}
+    port = next((p for p in UPLINK_PORTS if p not in used), None)
+    if port is None:
+        sys.exit(f"no free USB uplink port in {UPLINK_PORTS.start}-{UPLINK_PORTS.stop - 1}; pass --uplink")
+    return f"127.0.0.1:{port}"
 
 
 def setup(a, dev):
@@ -216,7 +230,8 @@ def bench(a, dev):
     results = []
     for i in range(1, a.runs + 1):
         others = other_qemus(dev, a.device_dir)
-        r = dev.sh(run_script(a, a.device_dir), check=False, timeout=a.timeout + 60)
+        uplink = pick_uplink(a, dev)
+        r = dev.sh(run_script(a, a.device_dir, uplink), check=False, timeout=a.timeout + 60)
         cpu = parse_cpu(r.stdout)
         stamped = dev.sh(f"cat {a.device_dir}/serial.stamped", check=False).stdout
         res, panic, lines = parse(stamped)
@@ -224,13 +239,13 @@ def bench(a, dev):
             Path(a.keep_logs).mkdir(parents=True, exist_ok=True)
             Path(a.keep_logs, f"run{i}.serial.txt").write_text(stamped)
         results.append({"run": i, "milestones": res, "panic": panic, "serial_lines": lines,
-                         "concurrent_qemu": len(others), "cpu": cpu})
+                         "concurrent_qemu": len(others), "cpu": cpu, "uplink": uplink})
         ms = "  ".join(f"{k}={res[k]:.1f}s" for k, _ in MILESTONES if k in res)
         note = f"  PANIC: {panic}" if panic else ("" if "waiting_host" in res else "  (did not reach waiting_host)")
         busy = f"  [{len(others)} other QEMU running]" if others else ""
         load = (f"  cpu user {cpu['user']:.1f}s sys {cpu['sys']:.1f}s"
                 f" = {(cpu['user'] + cpu['sys']) / cpu['wall']:.2f} cores avg") if cpu and cpu["wall"] else ""
-        print(f"run {i}/{a.runs}: {ms}{note}{busy}{load}")
+        print(f"run {i}/{a.runs} [uplink {uplink.rsplit(':', 1)[-1]}]: {ms}{note}{busy}{load}")
     return results
 
 
@@ -257,7 +272,7 @@ def profile(a, dev):
     wrap = f"{d}/simpleperf record -e {a.profile_event} -f {a.profile_freq} -o {d}/perf.data"
     print(f"\nprofile run (simpleperf, {a.profile_event} @ {a.profile_freq} Hz) ...")
     # debug-threads names the vCPU and I/O threads ("CPU 0/TCG", ...) for the per-thread report.
-    dev.sh(run_script(a, d, wrap=wrap, extra=("-name", "restore-bench,debug-threads=on")),
+    dev.sh(run_script(a, d, pick_uplink(a, dev), wrap=wrap, extra=("-name", "restore-bench,debug-threads=on")),
            check=False, timeout=a.timeout + 120)
     stamped = dev.sh(f"cat {d}/serial.stamped", check=False).stdout
     res, panic, _ = parse(stamped)
@@ -342,7 +357,8 @@ def main():
     ap.add_argument("--ram", default="2G")
     ap.add_argument("--tb-size", type=int, default=1024, help="TCG translation cache MiB (app default)")
     ap.add_argument("--timeout", type=int, default=180, help="seconds per run")
-    ap.add_argument("--uplink", default="127.0.0.1:18030", help="USB uplink addr (avoid 8030 clashes)")
+    ap.add_argument("--uplink", default="auto",
+                    help="USB uplink addr; 'auto' (default) picks a free 127.0.0.1 port in 18030-18099 per run")
     ap.add_argument("--device-dir", default="/data/local/tmp/restore-bench")
     ap.add_argument("--keep-logs", help="local dir for stamped serial logs and the profile report")
     ap.add_argument("--profile", metavar="SIMPLEPERF", help="device simpleperf binary: add a profiled run")
