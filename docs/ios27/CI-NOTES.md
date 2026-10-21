@@ -7,12 +7,14 @@ runners (first green run: 39602151945).
 
 ## 1. Summary
 
-Two jobs, both on `macos-14`:
+Four jobs. The three builds run on `macos-14`, the emulator test on `ubuntu-24.04`:
 
 | Job | What it builds | Rough cost | Purpose |
 |---|---|---|---|
 | `full-build` | static deps + full QEMU cross-build + `assembleDebug` | ~7.5 min cold (measured) | the real `app-debug.apk` artifact |
 | `light-build` | static deps + stub `.so` + `lint`/`assembleDebug` | ~5.5 min (measured) | fast gate; still exercises NDK/meson + the whole AGP build |
+| `baseline-build` | same as `full-build`, with `TUNE_CFLAGS=-march=armv8-a` | ~4.5 min cold (measured) | the APK `emulator-smoke` tests (§8) |
+| `emulator-smoke` | nothing; installs and runs `baseline-build`'s APK on an emulator | ~2 min (measured) | app launches, main screen renders, bundled QEMU runs in the app sandbox and lists `t8030` (§8) |
 
 **Trigger decision: both jobs run on every PR and on pushes to `main` /
 `pixel*`.** The full QEMU cross-build turned out to be cheap on hosted
@@ -169,3 +171,57 @@ dev Mac had hidden:
    Keep it that way if the app ever bundles more assets.
 7. **Branch filter.** `on.push.branches` is `[main, pixel*]`; adjust to the
    repo's real branch names.
+
+## 8. Emulator smoke test (`emulator-smoke`, issue #26)
+
+`tools/emu_test.py app-smoke <apk>` installs the APK (`-g`, so the
+notification prompt doesn't cover the screen) and launches `MainActivity`. It
+checks via a uiautomator dump that the screen shows `Status: stopped` and
+`✓ QEMU binary bundled`, that the process is alive, and that logcat has no
+crash for the app. It then runs the bundled QEMU the way the app does: as the
+app's uid via `run-as`, from `nativeLibraryDir`. `--version` must succeed and
+`-M help` must list `t8030`. The UI dump, screenshot, logcat and QEMU output
+are uploaded as the `emulator-smoke` artifact. The same command works against
+a phone or a local emulator.
+
+**Why an x86_64 emulator.** The APK and QEMU are arm64-only, but hosted
+Apple-silicon macOS runners can't nest virtualization, so there's no arm64
+Android emulator in hosted CI. (A local `sdk_gphone64_arm64` emulator on an
+Apple-silicon Mac runs natively; that's what `docs/PHONE-SMOKE.md` used.)
+Ubuntu runners have KVM, and x86_64 Google APIs images (API 30+) run arm64
+apps through Android's built-in ARM translation (`ndk_translation`). It also
+handles exec'ing standalone arm64 executables via `binfmt_misc`, which is how
+`run-as … libqemu-system-aarch64.so` works there.
+
+**Why a baseline-ISA build.** On the first run (39609508800) the app and UI
+checks passed, but the Tensor-tuned QEMU
+(`-march=armv8.2-a+crypto+dotprod+rcpc`) died with SIGILL, raised by the
+translator itself (`SI_TKILL` from translated code) on a guest instruction it
+doesn't implement. So `baseline-build` builds the same sources for plain
+`armv8-a`, with its own sysroot cache because the tuning flags also apply to
+the deps, and `emulator-smoke` tests that APK. `full-build` and the shipped
+`app-debug-apk` stay Tensor-tuned. The cost is one more macOS build per PR,
+which is free for this public repo.
+
+**What covers the Tensor-tuned binary instead.** The emulator never executes
+the Tensor-specific instructions. That gap is covered on real hardware: a
+master build of the Tensor-tuned binary was run on the Pixel 10 with
+`tools/emu_test.py patch-check`, and its kernel patch matrix matched the
+baseline. Re-run that on the phone after changing `TUNE_CFLAGS`, the
+compiler or the NDK, since CI can't catch an ISA problem there.
+
+**Known issue it surfaced.** On the green run (39612534904), `-M help`
+printed the machine list and then aborted on exit:
+`FORTIFY: pthread_mutex_lock called on a destroyed mutex`, `SIGABRT` in a
+non-main QEMU thread. That looks like an exit-time race (a background thread,
+probably RCU, locks a mutex teardown already destroyed) which glibc ignores
+and bionic's FORTIFY turns into an abort, so it's likely on real phones too.
+`app-smoke` reports it as a `WARN` rather than failing, because it's a
+separate bug; it needs its own issue.
+
+**Limits.** This is a launch and packaging test, not a boot test. It needs no
+Apple files and never starts a VM; `docs/PHONE-SMOKE.md` and
+`emu_test.py boot` cover booting. If `ndk_translation` ever gains the missing
+extensions (or the translated image changes), `emulator-smoke` could test
+`full-build`'s APK directly and `baseline-build` could be dropped.
+
