@@ -7,7 +7,7 @@ import java.util.Properties
 /**
  * A prepared VM folder, as produced on a Mac by tools/package-vm.sh.
  *
- * The folder holds the user's own files (kernelcache, device tree, tickets,
+ * The folder holds the user's own files (kernelcache, device tree,
  * SEP firmware/ROM, disk images) plus a `vm.properties` naming them. Nothing
  * here downloads, decrypts or patches firmware; that stays a manual step.
  */
@@ -44,7 +44,7 @@ class VmLayout(val dir: File) {
     companion object {
         const val MANIFEST = "vm.properties"
         val PFLASH = listOf("sep_nvram", "sep_ssc")
-        val REQUIRED_KEYS = listOf("kernel", "dtb", "trustcache", "ticket", "sep_fw", "sep_rom", "root")
+        val REQUIRED_KEYS = listOf("kernel", "dtb", "trustcache", "sep_fw", "sep_rom", "root")
 
         /** The fixed-name NVMe namespaces from the Inferno setup guide. */
         val SMALL_DISKS = listOf(
@@ -124,7 +124,6 @@ object QemuCommand {
         val machine = listOf(
             "t8030",
             "trustcache=${path("trustcache")}",
-            "ticket=${path("ticket")}",
             "sep-fw=${path("sep_fw")}",
             "sep-rom=${path("sep_rom")}",
             "kaslr-off=true",

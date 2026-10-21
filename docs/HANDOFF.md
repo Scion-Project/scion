@@ -18,6 +18,32 @@ future work.
 so `dylanneve1/Inferno` covers it too. That upstream is archived (2022).
 Inferno is the active successor: last push Sep 2026, ~4k stars.
 
+## Moving to Inferno `dev` (2026-10-21)
+
+The submodule now tracks `dylanneve1/Inferno@pixel-dev`: upstream `dev` (314
+commits past `master`) with our Android/Tensor patches rebased on top. `dev`
+is a large restructure, and several things the old notes relied on are gone:
+
+* **No `./configure`.** `native/build-android.sh` now calls `meson setup`
+  directly with the NDK cross file. Every `-D` option it passes was checked
+  against `dev`'s `meson_options.txt`.
+* **No `pc-bios/keymaps`.** QEMU's VNC server still loads `en-us`, so a copy
+  is vendored at `native/keymaps/en-us` and bundled as an asset.
+* **No `ticket=` machine property.** Upstream now extracts the AP ticket from
+  the firmware. The app no longer passes it and the VM folder no longer needs
+  `root_ticket.der`.
+* **Only `t8030` and `s8000` machines remain.** The generic `virt` machine and
+  `-nodefaults` were deleted, so the "Linux guest on `-M virt`" test in step 1
+  of *Not yet verified* no longer works with this binary. Test the RFB/touch
+  path with a stock QEMU build, or with a real t8030 VM.
+* **nettle >= 3.10 is required** (`hw/arm/sep/trng.c` uses the DRBG-CTR API).
+  The Android build already uses 3.10.2. On Ubuntu 24.04 hosts (3.9.1),
+  install 3.10 into a private prefix and point `PKG_CONFIG_PATH` at it.
+  Lowering the meson requirement only moves the failure to load time.
+
+Host (Linux x86_64) build of `pixel-dev` verified: links, `--version` shows
+the de-branded string, `-M help` lists `t8030` and `s8000`.
+
 ## What's verified
 
 | Item | Result |

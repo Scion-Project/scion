@@ -90,7 +90,6 @@ def main():
         "kernel": kernel,
         "dtb": dtb,
         "trustcache": trustcache,
-        "ticket": data / "root_ticket.der",
         "sep_fw": a.sep_fw or pick(data, "sep-firmware.*.new.img4", "re-packed SEP firmware"),
         "sep_rom": a.sep_rom or pick(data, "AppleSEPROM-Cebu-B1*", "SEP ROM"),
     }
