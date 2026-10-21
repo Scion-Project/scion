@@ -2,6 +2,7 @@ package io.github.dylanneve1.iosonpixel.rfb
 
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
+import io.github.dylanneve1.iosonpixel.VmDisplay
 import java.io.BufferedInputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -17,15 +18,7 @@ import java.util.concurrent.Executors
  * a single OR. Touch is sent as an absolute pointer; Inferno's multitouch
  * device treats the left button as a finger on the glass.
  */
-class RfbClient(private val socketPath: File, private val listener: Listener) {
-
-    interface Listener {
-        /** The framebuffer was (re)allocated; [pixels] is width*height ARGB. */
-        fun onResize(width: Int, height: Int, pixels: IntArray)
-        /** Pixels inside the given rectangle changed. Called on the reader thread. */
-        fun onUpdate(x: Int, y: Int, w: Int, h: Int)
-        fun onDisconnected(error: Throwable?)
-    }
+class RfbClient(private val socketPath: File, private val listener: VmDisplay.Listener) : VmDisplay {
 
     @Volatile private var socket: LocalSocket? = null
     @Volatile private var closed = false
@@ -37,18 +30,18 @@ class RfbClient(private val socketPath: File, private val listener: Listener) {
     private var pixels = IntArray(0)
     private var raw = ByteArray(0)
 
-    fun start() {
+    override fun start() {
         Thread(::run, "rfb-reader").start()
     }
 
-    fun close() {
+    override fun close() {
         closed = true
         try { socket?.close() } catch (_: IOException) {}
         writer.shutdownNow()
     }
 
     /** Absolute pointer event in framebuffer coordinates. */
-    fun pointer(x: Int, y: Int, pressed: Boolean) {
+    override fun pointer(x: Int, y: Int, pressed: Boolean) {
         val o = out ?: return
         writer.execute {
             try {

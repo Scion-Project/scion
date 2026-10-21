@@ -12,9 +12,6 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
-import java.io.File
-import java.io.FileWriter
-import java.util.concurrent.TimeUnit
 
 /** Process-wide VM state the activities observe. */
 object VmState {
@@ -56,13 +53,13 @@ object VmState {
 }
 
 /**
- * Foreground service owning the QEMU child process.
+ * Foreground service owning the running VM (for QEMU, its child process).
  *
  * Android 12+ may kill "phantom" child processes of apps that are not in the
  * foreground; holding a foreground service keeps us out of that bucket.
  */
 class VmService : Service() {
-    private var process: Process? = null
+    private var instance: VmBackend.Instance? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -76,14 +73,12 @@ class VmService : Service() {
     }
 
     private fun startVm() {
-        if (process != null) return
+        if (instance != null) return
         startForeground(NOTIF_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
 
-        val paths = AppPaths(this)
-        val vm = VmLayout(paths.vmDir)
-        val problems = vm.problems() + listOfNotNull(
-            "QEMU binary not bundled in this build".takeIf { !paths.qemu.isFile },
-        )
+        val settings = VmSettings.load(this)
+        val backend = VmBackend.create(this, settings.backend)
+        val problems = backend.problems()
         if (problems.isNotEmpty()) {
             problems.forEach { VmState.addLine("error: $it") }
             VmState.set(VmState.Status.STOPPED)
@@ -92,48 +87,25 @@ class VmService : Service() {
         }
 
         VmState.set(VmState.Status.STARTING, exit = null)
-        installDataFiles(paths)
-        paths.vncSocket.delete()
-        paths.monitorSocket.delete()
-
-        val settings = VmSettings.load(this)
-        val cmd = QemuCommand.build(paths, vm, settings)
-        VmState.addLine("$ " + cmd.joinToString(" "))
-
-        val pb = ProcessBuilder(cmd).directory(vm.dir).redirectErrorStream(true)
-        pb.environment()["TMPDIR"] = paths.tmpDir.absolutePath
-        if (settings.vcpuAffinity.isNotBlank()) {
-            pb.environment()["QEMU_VCPU_AFFINITY"] = settings.vcpuAffinity
-        }
-
-        val p = try {
-            pb.start()
-        } catch (e: Exception) {
-            VmState.addLine("error: failed to start QEMU: $e")
+        val vm = backend.start(settings, VmState::addLine) ?: run {
             VmState.set(VmState.Status.STOPPED)
             stopSelf()
             return
         }
-        process = p
+        instance = vm
         wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "iosonpixel:vm").apply { acquire() }
         VmState.set(VmState.Status.RUNNING)
 
-        Thread({ pump(p, paths.logFile) }, "qemu-output").start()
+        Thread({ pump(vm, backend.kind) }, "vm-output").start()
     }
 
-    private fun pump(p: Process, logFile: File) {
-        FileWriter(logFile, false).use { log ->
-            p.inputStream.bufferedReader().forEachLine { line ->
-                log.write(line); log.write("\n"); log.flush()
-                VmState.addLine(line)
-            }
-        }
-        val code = p.waitFor()
-        VmState.addLine("QEMU exited with code $code")
+    private fun pump(vm: VmBackend.Instance, kind: Backend) {
+        val code = vm.pump(VmState::addLine)
+        VmState.addLine("${kind.label} exited with code $code")
         Handler(Looper.getMainLooper()).post {
-            if (process === p) {
-                process = null
+            if (instance === vm) {
+                instance = null
                 cleanup()
                 VmState.set(VmState.Status.STOPPED, exit = code)
                 stopSelf()
@@ -142,16 +114,9 @@ class VmService : Service() {
     }
 
     private fun stopVm() {
-        val p = process ?: run { stopSelf(); return }
+        val vm = instance ?: run { stopSelf(); return }
         VmState.set(VmState.Status.STOPPING)
-        Thread({
-            // Ask QEMU to quit cleanly first so disk images are flushed.
-            Monitor(AppPaths(this)).send("quit")
-            if (!p.waitFor(10, TimeUnit.SECONDS)) {
-                p.destroy()
-                if (!p.waitFor(5, TimeUnit.SECONDS)) p.destroyForcibly()
-            }
-        }, "qemu-stop").start()
+        Thread({ vm.stop() }, "vm-stop").start()
     }
 
     private fun cleanup() {
@@ -160,23 +125,9 @@ class VmService : Service() {
     }
 
     override fun onDestroy() {
-        process?.destroy()
+        instance?.kill()
         cleanup()
         super.onDestroy()
-    }
-
-    /** Copies keymaps etc. from assets so QEMU's -L data dir is populated. */
-    private fun installDataFiles(paths: AppPaths) {
-        fun copy(assetPath: String, dest: File) {
-            val children = assets.list(assetPath).orEmpty()
-            if (children.isEmpty()) {
-                dest.parentFile?.mkdirs()
-                assets.open(assetPath).use { input -> dest.outputStream().use { input.copyTo(it) } }
-            } else {
-                children.forEach { copy("$assetPath/$it", File(dest, it)) }
-            }
-        }
-        if (assets.list("qemu-data").orEmpty().isNotEmpty()) copy("qemu-data", paths.dataDir)
     }
 
     private fun notification(): Notification {
