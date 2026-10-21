@@ -46,6 +46,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         paths = AppPaths(this)
         paths.vmDir.mkdirs()
+        DebugBundle.install(this)
         val s = VmSettings.load(this)
         backend = VmBackend.create(this, s.backend)
         val pad = (16 * resources.displayMetrics.density).toInt()
@@ -121,6 +122,10 @@ class MainActivity : Activity() {
         val display = Button(this).apply { text = "Display"; setOnClickListener { openDisplay() } }
         listOf(start, stop, display).forEach { buttons.addView(it, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)) }
         root.addView(buttons)
+        root.addView(Button(this).apply {
+            text = "Share debug bundle"
+            setOnClickListener { DebugBundle.buildAndShare(this@MainActivity, it) }
+        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
 
         text().text = "${backend.kind.label} output"
         log = text(10f, mono = true)
