@@ -246,15 +246,27 @@ Measured call-gate counts:
 | SPTM         | 1      | 7     | SPTM mostly *returns* (GEXIT) to its caller        |
 | TXM          | 0      | 9     | TXM is only ever *entered*; it only GEXITs out     |
 
-Interpretation: the EL1 kernel issues `GENTER` to cross into the guarded level where
-SPTM dispatches; SPTM routes page-table / code-signing requests (some to TXM) and
-`GEXIT`s back. TXM never `GENTER`s — it is a callee reached inside guarded mode and
-only `GEXIT`s. Inferno already emulates a guarded level (GL1, used by PPL) in
-`a13_gxf.c` (`GXF_*_EL1`, `*_GL11`). **If SPTM and TXM run at that same GL1** — the
-likely case — then no new CPU execution state is required to *reach and run* them, and
-the boot hand-off (this document) is the whole critical path. If they instead require
-a distinct SPTM guarded level, that is an additive `a13_gxf.c`/`target/arm` change
-(see Milestone 2 / OPEN-4); it does not change the load map or boot-args contract here.
+Interpretation (confirmed by the GXF analysis, ios-on-pixel#13 `docs/ios27/GXF-GAP.md`):
+the EL1 kernel issues `GENTER` to cross into **guarded EL1** where SPTM dispatches;
+SPTM routes page-table / code-signing requests (some to TXM) and `GEXIT`s back. TXM
+never `GENTER`s and programs **no** GXF registers — SPTM manages GXF for it. **GL1 is
+enough: there is no GL2 and no new banked register file.** Inferno already models this
+level in `a13_gxf.c` (`GXF_*_EL1`, `*_GL11`, the `GENTER → GXF_ENTER_EL1 → GEXIT` path).
+
+Consequences for the hand-off (this is the whole point):
+
+- **Enter SPTM at non-guarded EL1 with GXF *not* yet enabled.** SPTM's single `GENTER`
+  is in its own boot path: it enables GXF from non-guarded EL1 and installs *itself* as
+  the `GXF_ENTER_EL1` handler. So the emulator hands control to SPTM exactly the way it
+  already hands control to a kernel (EL1, MMU off at reset) — **do not** pre-program any
+  GXF register for SPTM.
+- The boot hand-off (this document) is therefore the entire critical path; no new CPU
+  execution state is required to reach and run SPTM.
+- Trace aid only (no emulator work): on 27 the kernel's monitor calls put a selector in
+  `x16[63:48]` (175 sites); 26's PPL used `x15`.
+- Early SPTM bring-up may `UNDEF` on an `S3_4_C15_*` / `S3_6_C15_*` IMPDEF register
+  (SPTM's exception vectors read `S3_6_C15_C8_0`) until the GXF branch (`ios27/gxf`)
+  adds them — expected; note and continue.
 
 ---
 
