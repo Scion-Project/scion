@@ -72,6 +72,7 @@ needed three more things beyond the above:
 | App → foreground service → exec QEMU as `untrusted_app` → log capture → exit code | ✅ |
 | Bad kernel file gives a clean error (was a SIGSEGV) | ✅ after the `boot.c` patch |
 | Main screen checks (binary present, VM folder complete, IMG4 header sniffing) | ✅ on a synthetic folder |
+| VM folder import via the SAF folder picker (`ImportService`) | ✅ on a zero-filled 150 MiB folder: byte-identical copy, cancel, free-space refusal, "no vm.properties" refusal; multi-GB not tried (emulator has ~600 MB free) |
 | `ipsw_probe.py` against real IPSWs over HTTP range requests | ✅ iOS 14.0 / 14.8 → supported, ~600 KiB fetched; iOS 27 → unsupported |
 | `ipsw_probe.py` SPTM/TXM + AEA detection | ✅ 27.0.1 → SPTM/TXM flagged; 26.6.2 and 27.0.1 OS images flagged `.aea` |
 | RFB display in the app (`DisplayActivity` via `attach`) | ✅ renders QEMU's console text, scaled, over the unix socket; client gets 32 bpp / depth 24 / LE as requested |
