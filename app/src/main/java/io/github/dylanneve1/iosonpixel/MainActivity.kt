@@ -90,6 +90,12 @@ class MainActivity : Activity() {
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
         }
+
+        // Developer hook (DisplayActivity isn't exported):
+        //   adb shell am start -n <pkg>/.MainActivity --ez attach true
+        if (intent.getBooleanExtra(DisplayActivity.EXTRA_ATTACH, false)) {
+            startActivity(Intent(this, DisplayActivity::class.java).putExtra(DisplayActivity.EXTRA_ATTACH, true))
+        }
     }
 
     override fun onResume() {

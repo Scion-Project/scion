@@ -8,6 +8,7 @@
 #   ANDROID_NDK_HOME  NDK root (default: newest under ~/Library/Android/sdk/ndk)
 #   API               Android API level to target (default: 31)
 #   TUNE_CFLAGS       CPU tuning flags (default: Tensor G5 / Cortex-X4 tuning)
+#   INFERNO_SRC       Inferno source tree (default: third_party/inferno)
 #   JOBS              parallel jobs
 set -euo pipefail
 
@@ -15,7 +16,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NATIVE="$ROOT/native"
 WORK="$NATIVE/build"          # downloads + build trees (gitignored)
 PREFIX="$WORK/sysroot"        # static deps install here
-SRC_QEMU="$ROOT/third_party/inferno"
+SRC_QEMU="${INFERNO_SRC:-$ROOT/third_party/inferno}"  # any Inferno dev checkout
 JNI_OUT="$ROOT/app/src/main/jniLibs/arm64-v8a"
 ASSET_OUT="$ROOT/app/src/main/assets/qemu-data"
 
@@ -112,6 +113,10 @@ CMAKE_ANDROID_ARCH_ABI = 'arm64-v8a'
 CMAKE_SYSTEM_VERSION = '$API'
 EOF
 
+# QEMU itself is built as a "linux" host: bionic is Linux, and QEMU only enables
+# its Linux code paths (gettid, tgkill, sysfs, ...) when meson reports linux.
+sed "s/^system = 'android'/system = 'linux'/" "$WORK/android-arm64.cross" > "$WORK/android-arm64-qemu.cross"
+
 fetch() { # url sha256 -> path of the downloaded file
   local url="$1" sum="$2" out="$WORK/dl/${1##*/}"
   [[ -f "$out" ]] || curl -fL --retry 3 -o "$out" "$url"
@@ -154,6 +159,14 @@ build_tasn1() {
      && make -j"$JOBS" -C lib && make -C lib install)
 }
 
+build_lz4() {
+  local s; s="$(unpack "$(fetch https://github.com/lz4/lz4/archive/refs/tags/v1.10.0.tar.gz \
+    537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b)" lz4)"
+  (cd "$s/lib" && make -j"$JOBS" liblz4.a liblz4.pc CC="$CC" AR="$AR" CFLAGS="$OPT_CFLAGS" \
+       PREFIX="$PREFIX" LIBDIR="$PREFIX/lib" \
+     && make install BUILD_SHARED=no PREFIX="$PREFIX" LIBDIR="$PREFIX/lib")
+}
+
 build_lzfse() {
   local s; s="$(unpack "$(fetch https://github.com/lzfse/lzfse/archive/refs/tags/lzfse-1.0.tar.gz \
     cf85f373f09e9177c0b21dbfbb427efaedc02d035d2aade65eb58a3cbf9ad267)" lzfse)"
@@ -194,6 +207,7 @@ build_deps() {
   build_gmp
   build_nettle
   build_tasn1
+  build_lz4
   build_lzfse
   build_glib
   build_pixman
@@ -204,7 +218,7 @@ configure_qemu() { # builddir
   # It only builds aarch64-softmmu now, so there is no target list to pass.
   # dev pulls libyuv (CMake), mlib and keycodemapdb in as meson subprojects.
   env -u AR -u NM -u RANLIB -u STRIP -u OBJCOPY -u LD CC="$WORK/host-cc" CXX="$WORK/host-c++" \
-    meson setup "$1" "$SRC_QEMU" --cross-file "$WORK/android-arm64.cross" \
+    meson setup "$1" "$SRC_QEMU" --cross-file "$WORK/android-arm64-qemu.cross" \
     --buildtype=release --wrap-mode=default -Dwerror=false -Ddebug=false \
     -Ddefault_library=static -Dtools=disabled -Dqom_cast_debug=false \
     -Dkvm=disabled -Dhvf=disabled -Dwhpx=disabled -Dtcg=enabled \
@@ -241,6 +255,6 @@ case "${1:-all}" in
   deps) build_deps ;;
   qemu) build_qemu ;;
   all) build_deps; build_qemu ;;
-  gmp|nettle|tasn1|lzfse|glib|pixman) "build_$1" ;;
-  *) echo "usage: $0 [deps|qemu|all|gmp|nettle|tasn1|lzfse|glib|pixman]" >&2; exit 2 ;;
+  gmp|nettle|tasn1|lz4|lzfse|glib|pixman) "build_$1" ;;
+  *) echo "usage: $0 [deps|qemu|all|gmp|nettle|tasn1|lz4|lzfse|glib|pixman]" >&2; exit 2 ;;
 esac

@@ -20,7 +20,7 @@ Inferno is the active successor: last push Sep 2026, ~4k stars.
 
 ## Moving to Inferno `dev` (2026-10-21)
 
-The submodule now tracks `dylanneve1/Inferno@pixel-dev`: upstream `dev` (314
+The submodule tracks `dylanneve1/Inferno@pixel-dev`: upstream `dev` (314
 commits past `master`) with our Android/Tensor patches rebased on top. `dev`
 is a large restructure, and several things the old notes relied on are gone:
 
@@ -44,6 +44,22 @@ is a large restructure, and several things the old notes relied on are gone:
 Host (Linux x86_64) build of `pixel-dev` verified: links, `--version` shows
 the de-branded string, `-M help` lists `t8030` and `s8000`.
 
+**Android build of `dev`** (verified on macOS with NDK r28, 1056/1056 steps)
+needed three more things beyond the above:
+
+* **`liblz4`** is now a hard dependency (`hw/usb`, USB uplink); built by
+  `build_lz4`, checksum cross-checked against Homebrew's formula.
+* **QEMU must see `host_os == linux`.** Without `./configure`, meson takes the
+  host OS from the cross file (`android`), so `CONFIG_LINUX` is unset and
+  `qemu_get_thread_id`/`qemu_kill_thread` (`SYS_gettid`, `__NR_tgkill`) and the
+  `block/file-posix.c` sysfs helpers fail to compile. The script derives
+  `android-arm64-qemu.cross` with `system = 'linux'` for QEMU only; deps keep
+  `android`.
+* **Three `qemu_build_not_reached()` switch defaults** (softfloat rounding,
+  AArch32 SRS `amode`, the arm64 TCG branch conditions) are compile errors with
+  the NDK's clang because it can't prove them dead; they switch on runtime
+  values, so they're now `assert_not_reached()`.
+
 ## What's verified
 
 | Item | Result |
@@ -57,28 +73,36 @@ the de-branded string, `-M help` lists `t8030` and `s8000`.
 | Bad kernel file gives a clean error (was a SIGSEGV) | ✅ after the `boot.c` patch |
 | Main screen checks (binary present, VM folder complete, IMG4 header sniffing) | ✅ on a synthetic folder |
 | `ipsw_probe.py` against real IPSWs over HTTP range requests | ✅ iOS 14.0 / 14.8 → supported, ~600 KiB fetched; iOS 27 → unsupported |
+| `ipsw_probe.py` SPTM/TXM + AEA detection | ✅ 27.0.1 → SPTM/TXM flagged; 26.6.2 and 27.0.1 OS images flagged `.aea` |
+| RFB display in the app (`DisplayActivity` via `attach`) | ✅ renders QEMU's console text, scaled, over the unix socket; client gets 32 bpp / depth 24 / LE as requested |
+| Touch → QEMU input | ✅ an `adb` tap + swipe arrived as 2× button-down / 2× button-up and 28 absolute x/y pairs (`-trace input_event_*`) |
+| Button bar → HMP `sendkey` | ✅ Home → `f6` down/up, Power → `f5` down/up |
+| `QEMU_VCPU_AFFINITY` | ✅ `1;2;3;4-7` with `-smp 4` gave exactly those per-thread `Cpus_allowed_list` values; non-vCPU threads stay on 0–7 (8-core emulator, not yet a real Tensor G5) |
+| Inferno `dev` + our patches build for Android | ✅ see "Android build of `dev`" above |
+| Kernel patch-check on real 14.8 / 26.6.2 / 27.0.1 kernels | ✅ see [IOS27.md](IOS27.md) |
 
 ## Not yet verified
 
-1. **RFB display + touch path.** I was about to test this when the session
-   ended. The `attach` extra exists for exactly this:
+1. **Display/touch with a real t8030 guest.** The path itself is verified
+   (table above), but that test used the old `master`-based binary because
+   `dev` no longer has `-M virt`. To repeat it, start any QEMU that has `virt`
+   on the app's sockets, then attach the viewer. `DisplayActivity` isn't
+   exported, so go through the launcher activity:
    ```sh
-   P=io.github.dylanneve1.iosonpixel
-   Q=$(adb shell pm dump $P | grep -m1 legacyNativeLibraryDir= | sed 's/^[^=]*=//' | tr -d '\r')/arm64/libqemu-system-aarch64.so
-   F=/data/data/$P/files
-   # keymap must exist under -L (the service copies it from assets on first Start)
-   adb shell "run-as $P sh -c 'cd $F && $Q -L $F/qemu-data -M virt -cpu max -m 128 -nodefaults \
-       -device ramfb -display none -vnc unix:$F/vnc.sock \
-       -monitor unix:$F/monitor.sock,server=on,wait=off'" &
-   adb shell am start -n $P/.DisplayActivity --ez attach true
+   P=io.github.dylanneve1.iosonpixel; F=/data/data/$P/files
+   adb shell "run-as $P sh -c 'cd $F && <qemu> -L $F/qemu-data -M virt -cpu max -m 256 \
+       -device ramfb -device qemu-xhci -device usb-tablet -display none \
+       -vnc unix:$F/vnc.sock -monitor unix:$F/monitor.sock,server=on,wait=off \
+       -trace \"input_event_*\" > $F/virt.log 2>&1 &'"
+   adb shell am start -n $P/.MainActivity --ez attach true
    ```
-   Expect QEMU's "Guest has not initialized the display" console text.
 2. **Real iOS 14 boot on a Pixel 10.** Needs a VM folder the user prepared on
    a Mac, plus `tools/package_vm.py --push`. Nothing about this was tested.
 3. **Phantom-process killer** behaviour on a real Pixel during long runs.
-4. **`QEMU_VCPU_AFFINITY`** on real Tensor G5 cores. It compiles; the effect
-   hasn't been measured. Watch logcat for its `warn_report` if Android's
-   cpuset refuses the mask.
+4. **`QEMU_VCPU_AFFINITY`** on real Tensor G5 cores. Pinning works on an
+   8-core emulator; the performance effect on a Pixel hasn't been measured.
+   Android's cpusets may narrow the mask when the app is in the background;
+   watch for its `warn_report`.
 
 ## Architecture recap
 
@@ -154,9 +178,21 @@ frankel/blazer/mustang/rango). Paths are in that repo.
 5. `hw/arm/apple-silicon/boot.c`: reject non-Mach-O kernels cleanly.
 6. `hw/arm/apple-silicon/t8030.c`: unknown kernel version → error instead of UB.
 
+On `pixel-dev` (paths are `hw/arm/…` there), additionally:
+
+7. `fpu/softfloat.c`, `target/arm/tcg/translate.c`, `tcg/aarch64/tcg-target.c.inc`:
+   runtime `assert_not_reached()` instead of `qemu_build_not_reached()`.
+8. `hw/arm/img4.asn1` + regenerated `img4.h`: accept the `[0]` PAYP element in
+   IM4P. Without it, **iOS 26/27 kernelcaches don't load at all**: DER decoding
+   failed and the loader silently fell back to a "raw" payload.
+9. `hw/arm/t8030.c`: `patch-check=on` triage mode, and an explicit error for
+   SPTM/TXM kernels (detected by their `__DATA_SPTM` / `__TEXT_BOOT_EXEC`
+   segments).
+
 ## Suggested next steps
 
-1. Test the RFB/touch path with the `attach` command above, then fix whatever it shows.
+1. Track upstream's "Gaia" release (SPTM/TXM, ChefKissInc/Inferno#268) and
+   rebase `pixel-dev` onto it; re-run patch-check (see [IOS27.md](IOS27.md)).
 2. Add CI: a GitHub Actions job running `native/build-android.sh` and
    `./gradlew assembleDebug`, uploading the APK as an artifact. The APK
    contains only our code plus GPL/AGPL QEMU.
@@ -170,7 +206,7 @@ frankel/blazer/mustang/rango). Paths are in that repo.
 ```sh
 git clone --recurse-submodules https://github.com/dylanneve1/ios-on-pixel
 cd ios-on-pixel
-brew install meson ninja pkgconf          # plus Android SDK + NDK r28
+brew install meson ninja pkgconf cmake    # plus Android SDK + NDK r28
 native/build-android.sh                   # deps + QEMU → app/src/main/jniLibs
 JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug
 ```
