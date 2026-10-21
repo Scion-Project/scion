@@ -185,7 +185,10 @@ class MainActivity : Activity() {
 
     private fun buildSettingsCard(root: LinearLayout, s: VmSettings) {
         val card = ui.card(root, "Settings", "Saved when you start the VM or leave this screen.")
-        ram = ui.field(card, "Guest RAM", s.ramGb.toString(), suffix = "GiB")
+        ram = ui.field(
+            card, "Guest RAM", s.ramGb.toString(), suffix = "GiB",
+            help = "At most ${VmSettings.MAX_RAM_GB}, the iPhone 11's maximum.",
+        )
         smp = ui.field(card, "vCPUs", s.smp.toString(), help = "Application cores + 1 SEP. 7 matches the iPhone 11.")
         tbSize = ui.field(card, "JIT translation cache", s.tbSizeMb.toString(), suffix = "MiB")
 
@@ -412,7 +415,7 @@ class MainActivity : Activity() {
     private fun formSettings(): VmSettings {
         val d = VmSettings()
         return VmSettings(
-            ramGb = ram.text.toString().toIntOrNull()?.coerceIn(1, 12) ?: d.ramGb,
+            ramGb = ram.text.toString().toIntOrNull()?.coerceIn(1, VmSettings.MAX_RAM_GB) ?: d.ramGb,
             smp = smp.text.toString().toIntOrNull()?.coerceIn(1, 8) ?: d.smp,
             tbSizeMb = tbSize.text.toString().toIntOrNull()?.coerceIn(64, 4096) ?: d.tbSizeMb,
             splitWx = splitWx.isChecked,
