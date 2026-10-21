@@ -9,7 +9,7 @@ ideally iOS shows that as Wi-Fi.
 
 **Recommendation:** do it in two phases.
 
-1. **Wired first (weeks).** Use the iPhone's own built-in USB reverse tether. QEMU
+1. **Wired first (about 2 weeks to the Pixel; already working on desktop).** Use the iPhone's own built-in USB reverse tether. QEMU
    acts as the USB host and puts the guest's USB port into Apple's "mode 3",
    which adds a CDC-NCM Ethernet function. It then bridges that link to QEMU's
    user-mode network (slirp), which supplies DHCP, DNS and NAT. iOS already
@@ -27,7 +27,7 @@ ideally iOS shows that as Wi-Fi.
 
 | Route | Shows as | Effort | Risk | Issues |
 |---|---|---|---|---|
-| USB NCM reverse tether, QEMU as host, slirp | wired link (no Wi-Fi icon) | **3–5 weeks** to a Pixel, if pairing is needed; about 2 weeks if not | low to medium | #79 #80 #81 #82 #83 |
+| USB NCM reverse tether, QEMU as host, slirp | wired link (no Wi-Fi icon) | **about 2 weeks** to a Pixel; works on desktop already (Inferno#21) | low | #79 #82 #83 |
 | Fake Wi-Fi: emulated BCM4378 PCIe and firmware protocol | **Wi-Fi**, joined to one network | 2–3 week spike, then **2–4 more months** | high | #84 |
 | USB host mode plus a QEMU `usb-net` adapter | "Ethernet" in Settings | months | high (Lightning accessory ID) | none: rejected |
 | Paravirtual NIC kext | anything | months | very high | none: rejected |
@@ -141,7 +141,7 @@ Safari connects. Nothing changes in the guest.
    (config 5)               ├ mode 3 + SET_CONFIGURATION 5
                             ├ CDC-NCM: NTB16 ⇄ Ethernet frames ─ -netdev user (slirp, #82)
                             │                                     DHCP · DNS · NAT ─ sockets ─ Pixel's network
- lockdownd/usbmux ─────────┴ usbmux → unix socket (#80) ─ pairing client (#81, if needed)
+ lockdownd/usbmux ─────────┴ usbmux → unix socket (#80, optional: tools, SSH)
                                                                   app: Network setting (#83)
 ```
 
@@ -153,14 +153,11 @@ host is protocol glue (mode switch, configuration, NTB16 framing) rather than
 a new subsystem. It also gives desktop Inferno users networking without a
 companion VM.
 
-**The open question is pairing.** eShard says the DHCP request comes "as long
-as the phone was paired", after `idevicepair`. If that holds for our guest,
-the host also needs the usbmux interface (#80) and a lockdown pairing client
-(#81): one "Trust" tap on the emulated screen the first time, and maybe a
-lockdown session on every boot. Milestone 1 answers this on desktop before any
-Android work. eShard had patched lockdownd because their SEP didn't work.
-Our VMs run the real SEP firmware, so stock pairing should work, as it does
-for upstream's companion users.
+**Pairing turned out not to be needed.** eShard says the DHCP request comes
+"as long as the phone was paired". In our measurement (below), iOS 14.0 took a
+lease and went online with no pairing and no lockdown session. So the usbmux
+socket (#80) and a pairing client (#81) aren't on the networking path. #80 is
+still worth doing for `idevice*` tools and SSH.
 
 **What the user sees:** network works for Safari and apps. Settings › Wi-Fi
 still shows nothing, and the status bar has no Wi-Fi icon. Apps that check
@@ -224,19 +221,45 @@ resolver from `LinkProperties`, or DNS has to go through a proxy in the app.
 `-netdev user,restrict=on` (DHCP and guest-to-host only) needs no permission,
 which is handy for testing.
 
+## Measured (M1, desktop)
+
+Inferno [#21](https://github.com/dylanneve1/Inferno/pull/21) adds
+`usb-uplink-type=net`. For that type, `usb-uplink-addr` names the netdev:
+
+```
+-netdev user,id=n0 -M t8030,...,usb-uplink-type=net,usb-uplink-addr=n0
+```
+
+Run on macOS: iOS 14.0 (18A5351d), n104, `-snapshot`, no companion VM, no
+pairing.
+
+```
+usb-net-uplink: device 05ac:12a8 "iPhone", 4 configurations
+usb-net-uplink: switching the device to mode 3 (CDC-NCM)
+usb-net-uplink: device 05ac:12a8 "iPhone", 5 configurations
+usb-net-uplink: CDC-NCM up (config 5, control 2, data 3/1, in 0x87 out 0x05, NTB in 12144 out 12144)
+usb-net-uplink: guest reports network connected
+```
+
+* The guest builds "PTP + Apple Mobile Device + NCM" and registers
+  `AppleUSBNCMControl`/`AppleUSBNCMData`.
+* slirp's `info usernet` shows the guest at 10.0.2.15, so it took the DHCP
+  lease. It sends DNS to 10.0.2.3 and opens TCP/443 connections to Apple's
+  servers.
+* **No pairing and no lockdown session were needed.**
+
+Not measured yet: throughput (the first version sends one frame per NTB and
+polls endpoints that return NAK) and Safari. This boot stayed on the
+first-boot progress bar, though networking was already up.
+
 ## Milestones
 
-**M1: wired networking on desktop (#79, plus #80 if pairing is required).
-About 1–2 weeks; 2–3 if pairing is needed.** New uplink type
-`usb-uplink-type=net` with `usb-uplink-netdev=<id>`. On macOS or Linux,
-`-netdev user,id=n0` boots iOS 14.0, the guest gets a lease, and Safari loads a
-page. The milestone also measures and records whether DHCP needs pairing, and
-whether it needs a session on every boot. Desktop libslirp is already
-available (Homebrew, distros), so M1 needs no Android work.
+**M1: wired networking on desktop (#79): done in Inferno #21**, pending
+review. The remaining work there: batch frames per NTB for throughput.
 
-**M2: on the Pixel (#82, #83, #81 if needed). About 1–2 weeks.** libslirp in
-the Android build with the DNS fix, the Network setting, and the pairing
-client if M1 showed it's needed.
+**M2: on the Pixel (#82, #83). About 1–2 weeks.** libslirp in the Android
+build with the DNS fix, and the Network setting that passes
+`-netdev user,id=n0` and `usb-uplink-type=net,usb-uplink-addr=n0`.
 
 **M3: fake Wi-Fi spike (#84). 2–3 weeks, time-boxed.** A BCM4378 PCIe endpoint
 that gets `AppleBCMWLANBusInterfacePCIe` through firmware download. Go or
