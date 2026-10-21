@@ -11,6 +11,8 @@ have completed there. It only rearranges files you already prepared:
 
   package_vm.py ~/InfernoData                 # -> ~/InfernoData/phone-vm
   package_vm.py ~/InfernoData --push          # ...and push to a connected Pixel
+  package_vm.py ~/InfernoData --ramdisk ~/InfernoData/Restore/<restore ramdisk>.dmg
+                                              # ...and boot it with -initrd (vm.properties ramdisk=)
 """
 import argparse
 import importlib.util
@@ -99,6 +101,9 @@ def main():
     ap.add_argument("--trustcache", type=Path)
     ap.add_argument("--sep-rom", type=Path)
     ap.add_argument("--sep-fw", type=Path, help="default: sep-firmware.*.new.img4")
+    ap.add_argument("--ramdisk", type=Path,
+                    help="optional restore ramdisk you already have; copied in and passed to QEMU as -initrd "
+                         "(never downloaded)")
     ap.add_argument("--raw-root", action="store_true", help="keep root as raw instead of qcow2")
     ap.add_argument("--qemu-img")
     ap.add_argument("--push", action="store_true", help="adb push to the phone afterwards")
@@ -129,7 +134,12 @@ def main():
     }
     for what, src in files.items():
         reject_if_aea(Path(src), what)  # e.g. an undecrypted OS/kernel image passed explicitly
+    ramdisk = a.ramdisk.expanduser().resolve() if a.ramdisk else None
+    if ramdisk:
+        reject_if_aea(ramdisk, "ramdisk")
     missing = [f"{k}: {v}" for k, v in files.items() if not Path(v).is_file()]
+    if ramdisk and not ramdisk.is_file():
+        missing.append(f"ramdisk: {ramdisk}")
     missing += [n for n in SMALL_DISKS + ["root"] if not (data / n).is_file()]
     if missing:
         sys.exit("missing:\n  " + "\n  ".join(missing))
@@ -141,6 +151,12 @@ def main():
         props[key] = Path(src).name
     for n in SMALL_DISKS:
         place(data / n, out / n)
+    if ramdisk:
+        taken = set(props.values()) | set(SMALL_DISKS) | {"root", "root.qcow2", "vm.properties"}
+        if ramdisk.name in taken:
+            sys.exit(f"ramdisk file name {ramdisk.name!r} clashes with another file in the VM folder; rename it")
+        place(ramdisk, out / ramdisk.name)
+        props["ramdisk"] = ramdisk.name
 
     if a.raw_root:
         place(data / "root", out / "root")

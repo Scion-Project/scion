@@ -224,6 +224,9 @@ object DebugBundle {
             appendLine("  (missing)")
         }
         appendLine()
+        val vm = VmLayout(dir)
+        appendLine("ramdisk (-initrd): " + (vm.ramdisk?.let { if (it.isFile) "${it.name}, ${it.length()} bytes" else "${it.name} (missing)" } ?: "none"))
+        appendLine()
         appendLine("files (name, bytes, modified):")
         val files = dir.listFiles()?.sortedBy { it.name }.orEmpty()
         if (files.isEmpty()) appendLine("  (empty or missing)")
