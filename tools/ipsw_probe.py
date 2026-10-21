@@ -11,10 +11,13 @@ Nothing is extracted, decrypted or patched.
   ipsw_probe.py --json ...      # machine-readable output
 """
 import argparse
+import http.client
 import io
 import json
 import plistlib
 import sys
+import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -42,17 +45,35 @@ class HttpRangeFile(io.RawIOBase):
     """Seekable read-only view of a remote file via HTTP Range requests."""
 
     BLOCK = 256 * 1024
+    ATTEMPTS = 5          # per request; waits 1, 2, 4, 8 s between attempts
 
     def __init__(self, url):
         self.url = url
         self.pos = 0
         self.cache = {}
         req = urllib.request.Request(url, method="HEAD", headers=UA)
-        with urllib.request.urlopen(req, timeout=30) as r:
-            self.size = int(r.headers["Content-Length"])
-            if r.headers.get("Accept-Ranges", "").lower() != "bytes":
-                raise OSError("server does not support range requests")
+        self.size, ranges = self._retry("HEAD", lambda: self._head(req))
+        if ranges.lower() != "bytes":
+            raise OSError("server does not support range requests")
         self.fetched = 0
+
+    @staticmethod
+    def _head(req):
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return int(r.headers["Content-Length"]), r.headers.get("Accept-Ranges", "")
+
+    def _retry(self, what, fn):
+        """Run fn(), retrying transient network errors with exponential backoff."""
+        for attempt in range(1, self.ATTEMPTS + 1):
+            try:
+                return fn()
+            except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
+                # HTTPError 4xx means the request itself is wrong; don't retry it.
+                if isinstance(e, urllib.error.HTTPError) and 400 <= e.code < 500:
+                    raise
+                if attempt == self.ATTEMPTS:
+                    raise OSError(f"{what} {self.url} failed after {attempt} attempts: {e}") from e
+                time.sleep(2 ** (attempt - 1))
 
     def seekable(self):
         return True
@@ -73,8 +94,15 @@ class HttpRangeFile(io.RawIOBase):
             start = i * self.BLOCK
             end = min(self.size, start + self.BLOCK) - 1
             req = urllib.request.Request(self.url, headers={**UA, "Range": f"bytes={start}-{end}"})
-            with urllib.request.urlopen(req, timeout=60) as r:
-                self.cache[i] = r.read()
+
+            def fetch():
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    data = r.read()
+                if len(data) != end - start + 1:
+                    raise ValueError(f"short read: {len(data)} of {end - start + 1} bytes")
+                return data
+
+            self.cache[i] = self._retry(f"range {start}-{end} of", fetch)
             self.fetched += len(self.cache[i])
         return self.cache[i]
 
