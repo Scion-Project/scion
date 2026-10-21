@@ -71,6 +71,11 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3.2.2
+        with:
+          # The default ("tools platform-tools") asks for the obsolete `tools`
+          # package, which sdkmanager no longer has (exit 1). Install only
+          # platform-tools here; the next step installs the exact NDK/SDK bits.
+          packages: platform-tools
 
       - name: Install NDK r28 + platform + build-tools
         run: |
@@ -178,6 +183,11 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3.2.2
+        with:
+          # The default ("tools platform-tools") asks for the obsolete `tools`
+          # package, which sdkmanager no longer has (exit 1). Install only
+          # platform-tools here; the next step installs the exact NDK/SDK bits.
+          packages: platform-tools
 
       - name: Install NDK r28 + platform + build-tools
         run: |
