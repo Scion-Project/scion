@@ -37,8 +37,10 @@ Tooling: `otool -h/-l`, NDK `llvm-objdump --macho`, a small Apple-DT parser.
    `x0` = handoff selector (4 or 5), `x1` = boot-args ptr, `x2` = aux; it does
    `x0=x1; x1=x2` then enters the normal kernel `_start`.
 5. **Biggest blocker:** the 0x18…0x480 body of `sptm_bootinfo` (region descriptors +
-   page-table pool) and the SPTM *guarded-level* system registers are not yet mapped;
-   both are needed before SPTM can get past early MMU setup.
+   page-table pool) is unmapped and gates the SPTM→kernel path. The *execution level*
+   is likely **not** a blocker: GENTER/GEXIT counts (§2.5) suggest SPTM/TXM run at the
+   guarded level Inferno's `a13_gxf.c` already models (GL1), so the **boot flow is the
+   critical path**, not new CPU state. This spec is written to hold either way.
 
 ---
 
@@ -233,6 +235,27 @@ them at runtime, exactly as Inferno already injects `Kernel-<seg>` entries into
 honor `txm-secure-channel*` once the SEP↔TXM channel is modeled (later milestone).
 `crypto-hash-method` is `sha2-384` (unchanged).
 
+### 2.5 Guarded-mode usage (GENTER/GEXIT) — execution level is probably already modeled
+
+Measured call-gate counts:
+
+| Image        | GENTER | GEXIT | reading                                            |
+|--------------|--------|-------|----------------------------------------------------|
+| 26.6.2 kernel| 8      | —     | PPL-era: a handful of monitor entries              |
+| 27.0.1 kernel| 176    | —     | kernel now traps into the monitor ~176 call sites  |
+| SPTM         | 1      | 7     | SPTM mostly *returns* (GEXIT) to its caller        |
+| TXM          | 0      | 9     | TXM is only ever *entered*; it only GEXITs out     |
+
+Interpretation: the EL1 kernel issues `GENTER` to cross into the guarded level where
+SPTM dispatches; SPTM routes page-table / code-signing requests (some to TXM) and
+`GEXIT`s back. TXM never `GENTER`s — it is a callee reached inside guarded mode and
+only `GEXIT`s. Inferno already emulates a guarded level (GL1, used by PPL) in
+`a13_gxf.c` (`GXF_*_EL1`, `*_GL11`). **If SPTM and TXM run at that same GL1** — the
+likely case — then no new CPU execution state is required to *reach and run* them, and
+the boot hand-off (this document) is the whole critical path. If they instead require
+a distinct SPTM guarded level, that is an additive `a13_gxf.c`/`target/arm` change
+(see Milestone 2 / OPEN-4); it does not change the load map or boot-args contract here.
+
 ---
 
 ## 3. Physical / virtual memory reservation
@@ -330,11 +353,12 @@ descriptors — getting it *executing* is the milestone.
 
 ### Milestone 2 — correctness / enforcement
 
-1. **Guarded-level emulation** (the real CPU gap): SPTM runs at the SPTM guarded level
-   (GENTER/GEXIT), above PPL/GL1. `a13_gxf.c` already models GL1 (`*_GL11`); it needs the
-   SPTM guarded level + its IMPDEF sysregs. SPTM's exception vectors read
-   `S3_6_C15_C8_0` (an Apple IMPDEF guarded-state register) — that and the SPTM
-   dispatch path must be added to `target/arm` + `a13_gxf.c`.
+1. **Guarded-level emulation** — *only if GL1 is insufficient* (§2.5). `a13_gxf.c`
+   already models GL1 (`GXF_*_EL1`, `*_GL11`), which PPL uses and which SPTM/TXM most
+   likely share (SPTM: 1 GENTER/7 GEXIT; TXM: 0/9). If a distinct SPTM guarded level is
+   needed, add it + its IMPDEF sysregs there; SPTM's exception vectors read
+   `S3_6_C15_C8_0` (an Apple IMPDEF guarded-state register). This is additive and does
+   not affect Milestones 0–1.
 2. **TXM↔SEP secure channel**: honor `txm-secure-channel-base/size = 0x4000` on
    `/arm-io/dart-sep` and `/chosen/txm-secure-channel`.
 3. **Enforcement patches**: trust-cache / code-signing moved kernel→TXM on 27 (per
@@ -358,9 +382,12 @@ Draft C skeletons for Milestone 0 live in `docs/ios27/drafts/` (see below).
   needs beyond its image (and whether `+0x08/+0x10/+0x18` point at it or at a DT
   carveout). *Resolve:* once OPEN-1 is mapped, read the pool descriptor; cross-check
   against a `region-id` carveout in `/chosen/carveout-memory-map`.
-- **OPEN-4 — SPTM guarded level + sysregs.** Which EL/guarded level SPTM executes at
-  and the full IMPDEF register set (incl. `S3_6_C15_C8_0`). *Resolve:* disassemble
-  SPTM's entry/GXF transition code and the kernel's SPTM-call stubs; extend `a13_gxf.c`.
+- **OPEN-4 — Does SPTM/TXM run at the existing GL1?** GENTER/GEXIT counts (§2.5) point
+  to yes; if so the CPU model already suffices and the boot flow is the only critical
+  path. *Resolve:* bring SPTM up (Milestone 0) and watch whether it executes at GL1
+  without taking an unexpected trap; disassemble SPTM's single GENTER and its GXF
+  transition. If a distinct level is required, scope the `a13_gxf.c` addition
+  (incl. `S3_6_C15_C8_0`).
 - **OPEN-5 — IM4P vs raw input.** Whether to feed `.im4p` (needs the `sptm`/`trxm`
   type path + the PAYP ASN.1 fix already applied for kernels) or pre-decompressed
   `.bin`. *Resolve:* generalize `apple_boot_load_kernel`'s 4CC check; decide the
