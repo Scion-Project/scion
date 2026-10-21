@@ -9,7 +9,7 @@ import kotlin.random.Random
 
 /**
  * Disk throughput of shared storage (FUSE) against internal app storage, for #56.
- * A developer hook, logged under the tag "StorageBench":
+ * A developer hook (read in onCreate, so `am force-stop <pkg>` first), logged under the tag "StorageBench":
  *   adb shell am start -n <pkg>/.MainActivity --ez storage_bench true [--ei storage_bench_mb 100]
  *
  * Sequential: write [mb] MiB in 1 MiB blocks + fsync, then read it back. Random: 4 KiB

@@ -169,7 +169,7 @@ class ImportService : Service() {
         val needed = files.sumOf { allocated(it) }
         val free = StatFs(dest.path).availableBytes + old.sumOf { allocated(it) }
         if (needed + SPARE_BYTES > free) {
-            return "Move failed: needs ${gib(needed)} free in $where, ${gib(free)} available"
+            return "Move failed: needs ${gib(needed)} free in $where (plus ${gib(SPARE_BYTES)} headroom), ${gib(free)} available"
         }
 
         // Replacing the VM in use (a fresh adb push to shared storage while the VM is
