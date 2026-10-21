@@ -77,8 +77,12 @@ reports `the image regions pass SPTM's checks`.
   `DeviceTree.n104ap` and restore trust cache on the build host. The owner
   provides them. Expected next stop: whatever comes after `sptm_init()`'s
   region setup (PAPT registration, then "Starting TXM...").
-- After that: the TXM boot-arg struct (SPEC OPEN-2), then SPTM's hand-off to
-  the kernel trampoline (`x0` ∈ {4, 5}).
+- **TXM's arguments (SPEC OPEN-2) look like SPTM's job, not the loader's.**
+  After "Starting TXM...", SPTM builds TXM's argument block in its own `__bss`
+  and enters TXM through its domain-switch path, using the entry it computed
+  from `TXM-entry`/`TXM-virt`. The emulator only has to provide the TXM
+  regions. A run still has to confirm this.
+- After that: SPTM's hand-off to the kernel trampoline (`x0` ∈ {4, 5}).
 
 ## 1. Manifests: SPTM/TXM is new in 27
 
