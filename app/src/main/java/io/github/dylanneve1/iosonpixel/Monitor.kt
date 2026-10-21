@@ -5,8 +5,8 @@ import android.net.LocalSocketAddress
 import java.util.concurrent.Executors
 
 /**
- * Talks to QEMU's human monitor over its unix socket. Used for the hardware
- * buttons, which Inferno maps to F-keys (see its "Using the Device's Buttons").
+ * Talks to QEMU's human monitor over its unix socket. Used by [QemuBackend]
+ * for the hardware buttons and for a clean quit.
  */
 class Monitor(private val paths: AppPaths) {
 
@@ -37,16 +37,12 @@ class Monitor(private val paths: AppPaths) {
         }
     }
 
-    enum class Button(val key: String) {
-        POWER("f5"), HOME("f6"), VOLUME_DOWN("f3"), VOLUME_UP("f4"), RINGER("f2"),
-    }
-
     companion object {
         private val io = Executors.newSingleThreadExecutor()
 
-        /** Presses [button] for [holdMs] without blocking the caller. */
-        fun press(paths: AppPaths, button: Button, holdMs: Int = 100) {
-            io.execute { Monitor(paths).send("sendkey ${button.key} $holdMs") }
+        /** Presses QEMU key [key] for [holdMs] without blocking the caller. */
+        fun press(paths: AppPaths, key: String, holdMs: Int) {
+            io.execute { Monitor(paths).send("sendkey $key $holdMs") }
         }
     }
 }

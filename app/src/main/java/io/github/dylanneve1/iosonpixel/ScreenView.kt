@@ -9,14 +9,13 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.view.MotionEvent
 import android.view.View
-import io.github.dylanneve1.iosonpixel.rfb.RfbClient
 
 /**
  * Shows the guest framebuffer scaled to fit, and turns a finger on the view
  * into an absolute pointer with the button held (= one touch in the guest).
  */
-class ScreenView(context: Context) : View(context), RfbClient.Listener {
-    var client: RfbClient? = null
+class ScreenView(context: Context) : View(context), VmDisplay.Listener {
+    var client: VmDisplay? = null
     var onDisconnect: ((Throwable?) -> Unit)? = null
 
     private val lock = Any()

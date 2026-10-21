@@ -67,11 +67,14 @@ data class VmSettings(
     val splitWx: Boolean = false,
     /** Pin vCPU threads per [TensorG5.DEFAULT_VCPU_AFFINITY]; empty disables. */
     val vcpuAffinity: String = TensorG5.DEFAULT_VCPU_AFFINITY,
+    /** VM engine; only implemented backends are ever loaded. */
+    val backend: Backend = Backend.QEMU,
 ) {
     fun save(ctx: Context) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putInt("ram_gb", ramGb).putInt("smp", smp).putInt("tb_size_mb", tbSizeMb)
             .putBoolean("split_wx", splitWx).putString("vcpu_affinity", vcpuAffinity)
+            .putString("backend", backend.id)
             .apply()
     }
 
@@ -87,6 +90,7 @@ data class VmSettings(
                 tbSizeMb = p.getInt("tb_size_mb", d.tbSizeMb),
                 splitWx = p.getBoolean("split_wx", d.splitWx),
                 vcpuAffinity = p.getString("vcpu_affinity", d.vcpuAffinity) ?: d.vcpuAffinity,
+                backend = Backend.fromId(p.getString("backend", null))?.takeIf { it.implemented } ?: d.backend,
             )
         }
     }
@@ -115,55 +119,4 @@ class AppPaths(ctx: Context) {
     val monitorSocket = File(ctx.filesDir, "monitor.sock")
     val logFile = File(ctx.getExternalFilesDir(null), "qemu.log")
     val tmpDir: File = ctx.cacheDir
-}
-
-object QemuCommand {
-    /** Mirrors the sample command from the Inferno guide, minus host-only display flags. */
-    fun build(paths: AppPaths, vm: VmLayout, s: VmSettings): List<String> {
-        fun path(key: String) = vm.file(key)!!.absolutePath
-        val machine = listOf(
-            "t8030",
-            "trustcache=${path("trustcache")}",
-            "sep-fw=${path("sep_fw")}",
-            "sep-rom=${path("sep_rom")}",
-            "kaslr-off=true",
-        ).joinToString(",")
-
-        val accel = buildString {
-            append("tcg,thread=multi,tb-size=").append(s.tbSizeMb)
-            if (s.splitWx) append(",split-wx=on")
-        }
-
-        val args = mutableListOf(
-            paths.qemu.absolutePath,
-            "-L", paths.dataDir.absolutePath,
-            "-M", machine,
-            "-accel", accel,
-            "-kernel", path("kernel"),
-            "-dtb", path("dtb"),
-            "-append", "tlto_us=-1 mtxspin=-1 agm-genuine=1 agm-authentic=1 agm-trusted=1 " +
-                "serial=3 wdt=-1 -vm_compressor_wk_sw",
-            "-smp", s.smp.toString(),
-            "-m", "${s.ramGb}G",
-            "-display", "none",
-            "-vnc", "unix:${paths.vncSocket.absolutePath}",
-            "-monitor", "unix:${paths.monitorSocket.absolutePath},server=on,wait=off",
-            "-serial", "stdio",
-            // Shared storage is FUSE-backed; OFD locks there are unreliable.
-            "-drive", "file=sep_nvram,if=pflash,format=raw,file.locking=off",
-            "-drive", "file=sep_ssc,if=pflash,format=raw,file.locking=off",
-        )
-
-        fun nvme(id: String, file: String, format: String, device: String, nsid: Int, nstype: Int) {
-            args += listOf(
-                "-drive", "file=$file,format=$format,if=none,id=$id,file.locking=off",
-                "-device", "$device,drive=$id,bus=nvme-bus.0,nsid=$nsid,nstype=$nstype," +
-                    (if (device == "apple-nvram") "id=$id," else "") +
-                    "logical_block_size=4096,physical_block_size=4096",
-            )
-        }
-        nvme("root", vm.file("root")!!.name, vm.rootFormat, "nvme-ns", 1, 1)
-        for (ns in VmLayout.SMALL_DISKS) nvme(ns.name, ns.name, "raw", ns.device, ns.nsid, ns.nstype)
-        return args
-    }
 }
