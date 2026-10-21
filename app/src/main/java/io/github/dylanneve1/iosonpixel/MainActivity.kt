@@ -7,7 +7,9 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.os.Bundle
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.WindowInsets
@@ -41,6 +43,7 @@ class MainActivity : Activity() {
     private lateinit var smp: EditText
     private lateinit var tbSize: EditText
     private lateinit var affinity: EditText
+    private lateinit var pinning: TextView
     private lateinit var splitWx: Switch
     private lateinit var inProcess: Switch
     private lateinit var backendGroup: RadioGroup
@@ -119,7 +122,19 @@ class MainActivity : Activity() {
         ram = field("Guest RAM (GiB)", s.ramGb.toString())
         smp = field("vCPUs (application cores + 1 SEP; 7 matches the iPhone 11)", s.smp.toString())
         tbSize = field("JIT translation cache (MiB)", s.tbSizeMb.toString())
-        affinity = field("vCPU → Tensor G5 core pinning (';' per vCPU, empty = off)", s.vcpuAffinity, numeric = false)
+        affinity = field(
+            "vCPU → Tensor G5 core pinning (auto = from the vCPU count; or ';' per vCPU; empty = off)",
+            s.vcpuAffinity, numeric = false,
+        )
+        pinning = text(12f, mono = true)
+        // Show what auto (or the override) resolves to as the fields are edited.
+        val showPinning = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(e: Editable?) = renderPinning()
+        }
+        smp.addTextChangedListener(showPinning)
+        affinity.addTextChangedListener(showPinning)
         splitWx = Switch(this).apply {
             text = "Split W^X JIT mapping (try if QEMU fails to allocate its code buffer)"
             isChecked = s.splitWx
@@ -130,6 +145,7 @@ class MainActivity : Activity() {
             // The checks above depend on it, so apply it right away.
             setOnCheckedChangeListener { _, _ -> saveSettings(); render() }
         }.also { root.addView(it) }
+        renderPinning()
 
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         start = Button(this).apply {
@@ -239,9 +255,17 @@ class MainActivity : Activity() {
     /** The move button's direction: into internal storage unless the VM is already there and nothing newer is in shared. */
     private fun moveToInternal() = !paths.vmInternal || File(paths.sharedVmDir, VmLayout.MANIFEST).isFile
 
-    private fun saveSettings() {
+    private fun renderPinning() {
+        val p = formSettings().effectiveVcpuAffinity
+        pinning.text = "QEMU_VCPU_AFFINITY = " + p.ifBlank { "(off)" }
+    }
+
+    private fun saveSettings() = formSettings().save(this)
+
+    /** The settings as currently entered on screen. */
+    private fun formSettings(): VmSettings {
         val d = VmSettings()
-        VmSettings(
+        return VmSettings(
             ramGb = ram.text.toString().toIntOrNull()?.coerceIn(1, 12) ?: d.ramGb,
             smp = smp.text.toString().toIntOrNull()?.coerceIn(1, 8) ?: d.smp,
             tbSizeMb = tbSize.text.toString().toIntOrNull()?.coerceIn(64, 4096) ?: d.tbSizeMb,
@@ -249,7 +273,7 @@ class MainActivity : Activity() {
             inProcess = inProcess.isChecked,
             vcpuAffinity = affinity.text.toString().trim(),
             backend = Backend.entries.firstOrNull { it.ordinal + 1 == backendGroup.checkedRadioButtonId } ?: d.backend,
-        ).save(this)
+        )
     }
 
     private fun openDisplay() = startActivity(Intent(this, DisplayActivity::class.java))
