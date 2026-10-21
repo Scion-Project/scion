@@ -110,8 +110,14 @@ GPU: Imagination (Rogue-family DDK, BVNC `71.2.2448.1212`), 396–1094 MHz.
   (`2-7;2-7;2-7;2-7;2-7;2-7;0-1`, editable in the app).
 * **Compiler tuning:** `-march=armv8.2-a+crypto+dotprod+rcpc -mtune=cortex-x4`.
   This is the baseline every Tensor G5 core supports. SVE is left to runtime detection.
-* **No hardware virtualization:** the kernel has pKVM, but apps can't use it,
-  and Apple's custom system registers would trap anyway. So it's the TCG JIT.
+* **Hardware virtualization is a separate, experimental track.** Pixels ship
+  pKVM through Android's Virtualization Framework (AVF), which a sideloaded app
+  can use after an adb permission grant. But AVF runs VMs in the system's own
+  crosvm, and Apple-only CPU instructions don't exist on Tensor cores, so it
+  isn't a drop-in replacement. The default backend is QEMU's TCG JIT; the AVF
+  backend is being explored in
+  [ios-on-pixel-avf](https://github.com/dylanneve1/ios-on-pixel-avf) and will
+  become a selectable option in the app (#19).
 
 [docs/ROADMAP.md](docs/ROADMAP.md) has the performance plan, including what
 using the PowerVR GPU would take.

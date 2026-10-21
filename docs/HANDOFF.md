@@ -167,7 +167,9 @@ frankel/blazer/mustang/rango). Paths are in that repo.
 * `private/devices/google/lga/dts/lga-gpu-b0.dtsi`: GPU 396–1094 MHz.
 * `private/google-modules/powervr/`: Imagination Rogue-family DDK.
   `pixel/lga/*/config_kernel.h` lists `RGX_BVNC_CORE_KM_HEADER "cores/rgxcore_km_71.2.2448.1212.h"`.
-* GKI `CONFIG_KVM=y` (pKVM), which apps can't use. TCG is the only option.
+* GKI `CONFIG_KVM=y` (pKVM), exposed to apps through AVF only (crosvm, adb-granted
+  development permissions). The QEMU/TCG backend stays the default; AVF is explored in
+  [ios-on-pixel-avf](https://github.com/dylanneve1/ios-on-pixel-avf).
 
 ## Patches on `dylanneve1/Inferno@pixel`
 
