@@ -1,5 +1,10 @@
 # Milestone 0 draft — `sptm=` load path for t8030
 
+> **Superseded.** The implemented version is dylanneve1/Inferno#2. It reuses
+> `apple_boot_load_monitor()`/`t8030_map_monitor()`, builds the boot info from the rev 3
+> kernel boot-args plus the handoff pointer, and sets `CPACR_EL1.FPEN` at handoff
+> (spec §2.6). This draft is kept for history.
+
 Smallest change that gets **SPTM's first instructions executing** on the boot CPU,
 the way iBoot would hand over. Kernels without `sptm=` are unchanged. This is the
 code implemented on Inferno branch `ios27/sptm-load`; it is reproduced here so the
