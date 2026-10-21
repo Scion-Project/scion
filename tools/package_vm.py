@@ -24,6 +24,7 @@ from pathlib import Path
 PKG = "io.github.dylanneve1.iosonpixel"
 PHONE_DIR = f"/sdcard/Android/data/{PKG}/files/vm"
 SMALL_DISKS = ["firmware", "syscfg", "ctrl_bits", "nvram", "effaceable", "panic_log", "sep_nvram", "sep_ssc"]
+AEA_MAGIC = b"AEA1"  # Apple Encrypted Archive container magic (first 4 bytes)
 
 
 def load_probe():
@@ -46,6 +47,38 @@ def find_qemu_img(data: Path, explicit):
         if c and Path(c).is_file():
             return str(c)
     sys.exit("qemu-img not found; build Inferno on the Mac (guide: Host Setup) or `brew install qemu`")
+
+
+def reject_if_aea(path: Path, what: str):
+    """Stop with guidance if `path` is still an Apple Encrypted Archive.
+
+    iOS 26/27 IPSWs ship the OS root filesystem DMG as .aea (on 27.0.1 the
+    restore ramdisks are plain .dmg). This project ships no keys and never decrypts Apple
+    firmware for you: the upstream guide's restore step has you decrypt it
+    yourself on the Mac with Apple's own `aea` tool. We only sniff the magic
+    and refuse — we neither decrypt nor fetch anything.
+    """
+    is_aea = path.suffix.lower() == ".aea"
+    if not is_aea:
+        try:
+            with open(path, "rb") as f:
+                is_aea = f.read(len(AEA_MAGIC)) == AEA_MAGIC
+        except OSError:
+            return  # existence/readability is reported by the caller's checks
+    if not is_aea:
+        return
+    sys.exit(
+        f"{what} ({path.name}) is an Apple Encrypted Archive (.aea): still encrypted.\n"
+        f"Decrypt it yourself with macOS tools (Apple's `aea`; see `man aea`) by\n"
+        f"following the upstream Inferno guide's restore step, then rerun this tool.\n"
+        f"This tool ships no keys and does not decrypt or download firmware."
+    )
+
+
+def scan_for_aea(data: Path):
+    """Fail early if the prepared tree still contains any encrypted .aea image."""
+    for p in sorted(data.rglob("*.aea")):
+        reject_if_aea(p, "input image")
 
 
 def place(src: Path, dst: Path):
@@ -72,6 +105,7 @@ def main():
     a = ap.parse_args()
 
     data = a.data.expanduser().resolve()
+    scan_for_aea(data)  # refuse undecrypted .aea images (iOS 26/27 OS DMG); user decrypts on the Mac
     out = (a.out or data / "phone-vm").resolve()
     restore = data / "Restore"
     manifest = plistlib.loads((restore / "BuildManifest.plist").read_bytes())
@@ -93,6 +127,8 @@ def main():
         "sep_fw": a.sep_fw or pick(data, "sep-firmware.*.new.img4", "re-packed SEP firmware"),
         "sep_rom": a.sep_rom or pick(data, "AppleSEPROM-Cebu-B1*", "SEP ROM"),
     }
+    for what, src in files.items():
+        reject_if_aea(Path(src), what)  # e.g. an undecrypted OS/kernel image passed explicitly
     missing = [f"{k}: {v}" for k, v in files.items() if not Path(v).is_file()]
     missing += [n for n in SMALL_DISKS + ["root"] if not (data / n).is_file()]
     if missing:
