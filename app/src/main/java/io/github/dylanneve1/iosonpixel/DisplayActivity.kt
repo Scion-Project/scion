@@ -17,6 +17,7 @@ import io.github.dylanneve1.iosonpixel.HardwareButton as Key
 class DisplayActivity : Activity() {
     private lateinit var screen: ScreenView
     private var client: VmDisplay? = null
+    private var touch: VmTouch? = null
     private lateinit var backend: VmBackend
     private val onState: () -> Unit = {
         if (VmState.status == VmState.Status.STOPPED && !attachOnly) {
@@ -73,6 +74,9 @@ class DisplayActivity : Activity() {
         VmState.unobserve(onState)
         client?.close()
         client = null
+        touch?.close()
+        touch = null
+        screen.touch = null
         super.onStop()
     }
 
@@ -88,6 +92,8 @@ class DisplayActivity : Activity() {
         }
         client = c
         c.start()
+        touch = backend.openTouch()?.also { it.start() }
+        screen.touch = touch
     }
 
     private fun LinearLayout.addButton(label: String, onLong: (() -> Unit)? = null, onClick: () -> Unit) {

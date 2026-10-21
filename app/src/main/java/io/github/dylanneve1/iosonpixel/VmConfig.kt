@@ -138,6 +138,8 @@ class AppPaths(ctx: Context) {
     val dataDir = File(ctx.filesDir, "qemu-data")
     val vncSocket = File(ctx.filesDir, "vnc.sock")
     val monitorSocket = File(ctx.filesDir, "monitor.sock")
+    /** QMP, for multi-touch input ([QmpTouch]). */
+    val qmpSocket = File(ctx.filesDir, "qmp.sock")
     val logFile = File(ctx.getExternalFilesDir(null), "qemu.log")
     val tmpDir: File = ctx.cacheDir
 

@@ -28,6 +28,9 @@ interface VmBackend {
     /** A framebuffer + pointer connection to the running guest, not yet started. */
     fun openDisplay(listener: VmDisplay.Listener): VmDisplay
 
+    /** Multi-touch input to the running guest, not yet started; null if this backend has none. */
+    fun openTouch(): VmTouch? = null
+
     /** Presses a hardware button for [holdMs] without blocking the caller. */
     fun press(button: HardwareButton, holdMs: Int = 100)
 
@@ -84,6 +87,35 @@ interface VmDisplay {
 
     /** Absolute pointer event in framebuffer coordinates; [pressed] = finger on the glass. */
     fun pointer(x: Int, y: Int, pressed: Boolean)
+}
+
+/**
+ * Multi-touch input: each finger is its own contact. While [available] is
+ * false, touch falls back to the single [VmDisplay.pointer].
+ */
+interface VmTouch {
+    /** Contacts are accepted right now. May start a (re)connect attempt. */
+    val available: Boolean
+
+    fun start()
+    fun close()
+
+    /** One input frame: every contact that changed, in order. */
+    fun send(events: List<Event>)
+
+    enum class Type(val qmp: String) { BEGIN("begin"), UPDATE("update"), END("end"), CANCEL("cancel") }
+
+    /**
+     * A contact in [slot] (0 until [SLOTS]); [trackingId] is unique per touch.
+     * [x], [y] span the screen as 0..[MAX] (QEMU's absolute axis range).
+     */
+    data class Event(val type: Type, val slot: Int, val trackingId: Int, val x: Int, val y: Int)
+
+    companion object {
+        /** QEMU's INPUT_EVENT_SLOTS_MAX. */
+        const val SLOTS = 10
+        const val MAX = 0x7FFF
+    }
 }
 
 /** The iPhone's physical buttons. */
