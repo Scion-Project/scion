@@ -75,24 +75,27 @@ every disk is present.
 
 ## Setup
 
+**[docs/PHONE-QUICKSTART.md](docs/PHONE-QUICKSTART.md)** is the end-to-end
+guide (Mac → Pixel): checking the IPSW, preparing the VM, packaging, installing
+the app, importing, starting, the display and buttons, the debug bundle, and
+current limits. In short:
+
 1. **Prepare the VM on a Mac.** Follow the upstream
    [Inferno manual](https://chefkiss.dev/guides/inferno/) all the way through:
    restore, filesystem patches, and the first boot with data migration. Doing
    this by hand is upstream's explicit request, so this repo doesn't automate it.
-2. **Package it for the phone:**
-   ```sh
-   tools/package_vm.py ~/InfernoData --push    # root disk → qcow2, writes vm.properties, adb push
-   ```
-   Without adb, copy the `phone-vm` folder to the phone any way you like and
-   use **Import VM folder…** in the app. It streams the copy into the app's VM
-   folder, shows progress, checks free space first, and can be cancelled.
+2. **Package it:** `tools/package_vm.py ~/InfernoData` writes `phone-vm`
+   (root disk → qcow2, plus `vm.properties`). Add `--push` to `adb push` it
+   too, or copy the folder to the phone and use **Import VM folder…** in the app.
 3. **Build and install the app:**
    ```sh
    git submodule update --init
    native/build-android.sh            # first run builds deps too (~10 min)
    ./gradlew installDebug
    ```
-4. Open **iOS on Pixel**, check that everything is ✓, then tap **Start**.
+4. Open **iOS on Pixel**, check that everything is ✓, keep vCPUs at 4
+   ([#33](https://github.com/dylanneve1/ios-on-pixel/issues/33)), then tap
+   **Start**. If it fails, tap **Share debug bundle** and send the zip.
 
 ## Tensor G5 notes
 
