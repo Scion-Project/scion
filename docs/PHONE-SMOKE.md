@@ -5,7 +5,13 @@ free storage), not on a phone. Inferno `master` at `7c9a29a789`, Android cross b
 (release, TCG `thread=multi`), no new kernel patches: only the patches upstream already
 applies.
 
-## Result
+> **Update: with the real restore ramdisk, there's no panic.** XNU boots to `launchd`
+> and the restore daemon, brings up USB, and waits for a restore host. See
+> [Run 2](#run-2-real-restore-ramdisk). The `IOAESAccelerator` panic below came from the
+> **placeholder ramdisk**: Inferno's troubleshooting page lists it as the symptom of
+> booting restore without the restore ramdisk. It was not the SEP, as first suspected.
+
+## Result (run 1: placeholder ramdisk)
 
 **XNU 14.8 boots through the whole kernel and IOKit bring-up and reaches root mount in
 about 5 seconds of wall time.** It then panics about 60 guest seconds later:
@@ -49,15 +55,13 @@ A trace-enabled build (`-Dtrace_backends=log`) narrows it further:
   and nothing comes back, and the SEP IOP never starts (`apple_sep_iop_start` never
   fires). Every other IOP has matched two-way traffic: SMC (434/434), SIO, ANS2, AOP.
 
-So the evidence points at the **SEP**, which is only a placeholder in this run. The
-likely reading is that `AppleS8000AESAccelerator` won't publish `IOAESAccelerator` until
-the SEP is up, but that's a correlation, not proven. **OPEN; to resolve:** repeat with a
-real SEP ROM and SEP firmware (the user's own, as the app uses them). If `IOAESAccelerator`
-registers, the SEP was the gate. If not, trace `apple_aes_*` again to see where the driver
-stalls.
+**Corrected by run 2:** I read this as the SEP gating the AES driver. That was wrong.
+With the real restore ramdisk, the same placeholder SEP (it still never answers) produces
+no `IOAESAccelerator` panic in four full boots. The trace facts above still hold, but
+they didn't identify the cause: the missing restore ramdisk did. That matches Inferno's
+troubleshooting entry for this panic.
 
-The `md0` mount failures are **not** the stopping point. They come from the placeholder
-ramdisk (16 KiB of zeros, see below), and XNU keeps retrying until the AES panic.
+The `md0` mount failures come from the placeholder ramdisk (16 KiB of zeros, see below).
 
 ## Inputs and command
 
@@ -100,17 +104,49 @@ qemu -M t8030,trustcache=restore.trustcache.im4p,sep-fw=placeholder.sepfw,sep-ro
 3. **The Android dev build has tracing compiled out** (`Trace backends: nop`), so `-trace`
    silently does nothing. Add `-Dtrace_backends=log` for a diagnostic build.
 4. **`-smp 7` exhausts `vm.max_map_count`** before boot (tracked in #33). `-smp 4` boots.
+5. **Fetching:** `ipsw_probe.HttpRangeFile` has no retry, and a 71 MiB member timed out
+   mid-read. Fetching the member's exact byte range with `curl --retry` (offset from the
+   zip directory), then inflating and checking the CRC, worked first time (8 s).
+
+## Run 2: real restore ramdisk
+
+Same binary, command and inputs as run 1, but `-initrd` is the real 14.8 erase restore
+ramdisk (`018-61661-017.dmg`, IM4P `rdsk`, 105.7 MiB). It was range-fetched from the 14.8
+IPSW, CRC-checked against the zip directory, and kept as a local research copy. The
+binary is Inferno master `7c9a29a789` built with `-Dtrace_backends=log` (no `-trace`
+given). USB uplink on `127.0.0.1:18030`. Capped at 9 minutes.
+
+**Result: XNU boots to userland and the restore daemon waits for a host. No panic.**
+
+| Wall time | Stage |
+|---|---|
+| ≤ 5 s | `BSD root: md0`; the ramdisk mounts |
+| ≤ 10 s | `launchd[1]: hello`, then "Restore environment starting." Boot tasks run |
+| ≈ 19 s | `restored_external` checkpoints, through `enable_usb` |
+| ≈ 19 s | USB device stack up as *Apple Mobile Device* with the `AppleUSBMux` interface |
+| ≈ 19 s | **`waiting for host to trigger start of restore [timeout of 120 seconds]`** |
+| +120 s | no host connects: `restore-outcome=recovery_mode` written to NVRAM, `/sbin/reboot` |
+| ≈ +5 s | **warm reboot works**: the next boot reaches `launchd` about 5 s after the reboot |
+
+In 9 minutes the cycle ran **four times**, each identical and none panicking. Waiting for
+a host over USB is the expected end of restore mode. Times come from 5-second sampling
+and the guest wall clock in the log.
+
+Nothing in userland blocked on the SEP, even though it still never answers (restore mode
+hasn't needed it by this point). Non-fatal noise each boot:
+- `gasgauge_start_update_thread failed` (no battery gauge), reported as a restore warning
+- `kSMCKeyNotFound` for SMC notifications
+- missing display tunables
 
 ## What this means for the phone proof of concept
 
-- TCG on Android is fast enough for early boot: kernel and IOKit to root mount in seconds.
-- The next blocker is `IOAESAccelerator` never registering, most likely because no SEP
-  answers. Until it registers, nothing reaches userland, with or without a real ramdisk.
-  The CPU and memory model got this far without complaint.
-- **The most useful next data point is this same boot with real SEP inputs on the phone.**
-  The emulator has no real SEP ROM or firmware, so it can't test that.
-- After that, a real restore ramdisk (or a restored root disk with `auto-boot`) is needed
-  to get past root mount.
+- **The Android build boots iOS 14.8 XNU into userland.** `launchd` and the restore
+  daemon run within about 10–20 s of wall time on the emulator, and warm reboots work.
+  CPU, memory, interrupts, NVMe, NVRAM and USB-device emulation all held up.
+- The next steps are on the host side: a restore host on the uplink port to start an
+  actual restore, or a restored root disk with `auto-boot` for a normal boot.
+- The SEP hasn't been exercised yet. Real SEP inputs will matter once a restore or normal
+  boot reaches the data-protection and keybag stages.
 
 ## Reproduce
 
