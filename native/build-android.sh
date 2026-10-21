@@ -304,7 +304,8 @@ build_qemu_lib() {
   fi
   ninja -C "$b" -j"$JOBS" libqemu-system-aarch64-shared.so
   "$STRIP" -o "$JNI_OUT/libqemu-system-aarch64-shared.so" "$b/libqemu-system-aarch64-shared.so"
-  "$CC" $OPT_CFLAGS -shared -Wl,-z,max-page-size=16384 -o "$JNI_OUT/libqemu_jni.so" "$NATIVE/qemu_jni.c"
+  "$CC" $OPT_CFLAGS -shared -Wl,-z,max-page-size=16384 -Wl,--no-undefined -o "$JNI_OUT/libqemu_jni.so" \
+    "$NATIVE/qemu_jni.c" -landroid
   echo "installed $JNI_OUT/libqemu-system-aarch64-shared.so and libqemu_jni.so"
 }
 
