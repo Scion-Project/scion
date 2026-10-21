@@ -66,6 +66,7 @@ class VmLayout(val dir: File) {
 
 /** User-tunable knobs, persisted in SharedPreferences. */
 data class VmSettings(
+    /** At most [MAX_RAM_GB]: t8030 refuses to start with more. */
     val ramGb: Int = 4,
     /**
      * Application cores + 1 SEP core. The iPhone 11 has 6 + 1, but -smp 7
@@ -101,12 +102,15 @@ data class VmSettings(
     companion object {
         private const val PREFS = "vm_settings"
         const val AUTO = "auto"
+        /** t8030's SoC maximum (the iPhone 11 has 4 GB); QEMU exits at once above it. */
+        const val MAX_RAM_GB = 4
 
         fun load(ctx: Context): VmSettings {
             val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val d = VmSettings()
             return VmSettings(
-                ramGb = p.getInt("ram_gb", d.ramGb),
+                // Earlier builds allowed up to 12, which t8030 rejects.
+                ramGb = p.getInt("ram_gb", d.ramGb).coerceIn(1, MAX_RAM_GB),
                 smp = p.getInt("smp", d.smp),
                 tbSizeMb = p.getInt("tb_size_mb", d.tbSizeMb),
                 splitWx = p.getBoolean("split_wx", d.splitWx),
