@@ -71,12 +71,12 @@ The `md0` mount failures come from the placeholder ramdisk (16 KiB of zeros, see
 | `DeviceTree.n104ap.im4p` (`dtre`) | range-fetched from the 14.8 IPSW (n104ap Erase identity) |
 | restore trustcache (`rtsc`) | range-fetched: `Firmware/018-61661-017.dmg.trustcache` |
 | ramdisk | 16 KiB placeholder (zeros). t8030 needs one without `auto-boot`; the real 14.8 restore ramdisk was not fetched |
-| SEP ROM / SEP firmware | placeholders: a ROM of `b .` (SEP core idles) and 16 KiB of zeros. No real SEP inputs here |
+| SEP ROM / SEP firmware | placeholders, both filled with `b .` words: a 4 KiB ROM (the SEP core spins in place) and a 16 KiB firmware file (never run). No real SEP inputs here; see below |
 | NVMe namespaces, NVRAM, SEP NVRAM/SSC | blank images; root is a sparse 1 GiB file; all opened with `-snapshot` |
 
 The command mirrors the app's `QemuCommand` (Inferno's sample command), with `-smp 4`,
-`-m 2G` (the app default is 4G; the emulator has ~4 GB available), `-snapshot`, and a
-placeholder `-initrd`:
+`-m 2G` (the app default is 4G; the emulator has ~4 GB available), `-snapshot`, a
+placeholder `-initrd`, and a USB uplink port of its own (any free port; see finding 2):
 
 ```
 qemu -M t8030,trustcache=restore.trustcache.im4p,sep-fw=placeholder.sepfw,sep-rom=spin.seprom,kaslr-off=true,usb-uplink-addr=127.0.0.1:18030 \
@@ -87,6 +87,19 @@ qemu -M t8030,trustcache=restore.trustcache.im4p,sep-fw=placeholder.sepfw,sep-ro
   <sep_nvram/sep_ssc pflash, 7 NVMe namespaces each with id=<name>, as in QemuBackend.kt>
 ```
 
+**SEP placeholders.** Since Inferno #11, t8030 refuses SEP images that can't be real: empty
+files, files larger than their region (ROM 8 MiB, firmware 16 MiB), and files that are a
+single repeated byte. So zero-filled placeholders stop at load with a clear error. Fill the
+placeholders with any non-uniform pattern instead, for example the AArch64 `b .` word:
+
+```sh
+python3 -c "import struct; w = struct.pack('<I', 0x14000000)
+open('spin.seprom', 'wb').write(w * 1024)          # 4 KiB SEP ROM: the SEP core spins in place
+open('placeholder.sepfw', 'wb').write(w * 4096)    # 16 KiB SEP firmware: never run"
+```
+
+The ramdisk placeholder (`placeholder.ramdisk`, 16 KiB of zeros) isn't checked.
+
 ## Found along the way
 
 1. **A zero-filled SEP ROM makes QEMU abort.** The first attempt used a ROM of zeros. Once
@@ -94,9 +107,9 @@ qemu -M t8030,trustcache=restore.trustcache.im4p,sep-fw=placeholder.sepfw,sep-ro
    Serial showed a `dart-sep` fatal exception at address 0, then QEMU aborted with
    `Bad ram pointer 0x200` in `tb_htable_lookup` → `qemu_ram_addr_from_host_nofail`.
    A guest should fault there, not kill the host process. Only an invalid SEP ROM
-   triggers it (a real ROM doesn't execute zeros), and I haven't checked whether it's
-   Android-specific, so it isn't fixed here. A `b .` ROM avoids it, and that run has no
-   `dart-sep` fault.
+   triggers it (a real ROM doesn't execute zeros). A `b .` ROM avoids it, and that run has
+   no `dart-sep` fault. **Addressed in Inferno #11:** an IOMMU-denied CPU access is now a
+   guest bus error instead of a host abort, and a uniform SEP image is rejected at load.
 2. **Concurrent t8030 instances collide on the USB uplink port.** The VirtualHere host
    device binds `127.0.0.1:8030` by default, so a second instance fails to start.
    `usb-uplink-addr=127.0.0.1:<port>` avoids it. This matters for parallel testing on one
