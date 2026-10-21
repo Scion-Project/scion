@@ -72,12 +72,14 @@ data class VmSettings(
     val vcpuAffinity: String = TensorG5.DEFAULT_VCPU_AFFINITY,
     /** VM engine; only implemented backends are ever loaded. */
     val backend: Backend = Backend.QEMU,
+    /** Run QEMU as a library in the :vm process instead of as a child process. */
+    val inProcess: Boolean = false,
 ) {
     fun save(ctx: Context) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putInt("ram_gb", ramGb).putInt("smp", smp).putInt("tb_size_mb", tbSizeMb)
             .putBoolean("split_wx", splitWx).putString("vcpu_affinity", vcpuAffinity)
-            .putString("backend", backend.id)
+            .putString("backend", backend.id).putBoolean("in_process", inProcess)
             .apply()
     }
 
@@ -94,6 +96,7 @@ data class VmSettings(
                 splitWx = p.getBoolean("split_wx", d.splitWx),
                 vcpuAffinity = p.getString("vcpu_affinity", d.vcpuAffinity) ?: d.vcpuAffinity,
                 backend = Backend.fromId(p.getString("backend", null))?.takeIf { it.implemented } ?: d.backend,
+                inProcess = p.getBoolean("in_process", d.inProcess),
             )
         }
     }
@@ -117,6 +120,9 @@ class AppPaths(ctx: Context) {
     /** adb-pushable: /sdcard/Android/data/<pkg>/files/vm */
     val vmDir = File(ctx.getExternalFilesDir(null), "vm")
     val qemu = File(ctx.applicationInfo.nativeLibraryDir, "libqemu-system-aarch64.so")
+    /** The in-process variant: QEMU as a library, and the JNI shim that calls it. */
+    val qemuLib = File(ctx.applicationInfo.nativeLibraryDir, "libqemu-system-aarch64-shared.so")
+    val qemuJni = File(ctx.applicationInfo.nativeLibraryDir, "libqemu_jni.so")
     val dataDir = File(ctx.filesDir, "qemu-data")
     val vncSocket = File(ctx.filesDir, "vnc.sock")
     val monitorSocket = File(ctx.filesDir, "monitor.sock")

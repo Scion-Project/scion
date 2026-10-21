@@ -117,6 +117,15 @@ needed three more things beyond the above:
   executable), launched by `QemuBackend`. `VmService` is a `specialUse`
   foreground service that holds the running instance and a partial wake lock
   and pipes stdout/stderr to `qemu.log` and to `VmState`.
+* **In-process variant** (setting "Run QEMU in-process", default off): the
+  same QEMU built as `libqemu-system-aarch64-shared.so` (Inferno meson option
+  `system_shared_lib`), loaded by `QemuVmService` in a separate
+  `android:process=":vm"` through `native/qemu_jni.c`. VmService binds it with
+  `BIND_IMPORTANT` (so it runs at foreground priority, and the phantom-process
+  killer doesn't apply) and passes argv/env/cwd plus a console pipe over the
+  binder. QEMU's `exit()` ends the :vm process. The pipe's EOF marks the exit,
+  and the status comes from `ActivityManager.getHistoricalProcessExitReasons`.
+  The sockets are the same, so display and input don't change.
 * **Display:** `-display none -vnc unix:files/vnc.sock`, read by `rfb/RfbClient.kt`
   (RFB 3.8, no auth, raw + DesktopSize). Pixels are requested as LE 0x00RRGGBB
   and ORed to opaque ARGB.
