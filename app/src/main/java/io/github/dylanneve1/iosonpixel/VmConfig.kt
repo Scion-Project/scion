@@ -59,8 +59,11 @@ class VmLayout(val dir: File) {
 /** User-tunable knobs, persisted in SharedPreferences. */
 data class VmSettings(
     val ramGb: Int = 4,
-    /** 6 application cores + 1 SEP core, matching the iPhone 11. */
-    val smp: Int = 7,
+    /**
+     * Application cores + 1 SEP core. The iPhone 11 has 6 + 1, but -smp 7
+     * currently exhausts Android's per-process mapping limit (#33), so default to 3 + 1.
+     */
+    val smp: Int = 4,
     /** TCG translation cache size; bigger means less retranslation. */
     val tbSizeMb: Int = 1024,
     /** Map the JIT buffer twice (RW + RX) instead of RWX. */
