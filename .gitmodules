@@ -1,0 +1,5 @@
+[submodule "third_party/inferno"]
+	path = third_party/inferno
+	url = https://github.com/dylanneve1/Inferno.git
+	shallow = true
+	branch = pixel

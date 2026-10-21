@@ -1,0 +1,9 @@
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.DS_Store
+native/build/
+app/src/main/jniLibs/
+app/src/main/assets/qemu-data/
