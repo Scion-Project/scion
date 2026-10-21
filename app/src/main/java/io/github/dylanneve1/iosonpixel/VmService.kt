@@ -78,7 +78,9 @@ class VmService : Service() {
 
         val settings = VmSettings.load(this)
         val backend = VmBackend.create(this, settings.backend)
-        val problems = backend.problems()
+        val problems = backend.problems() + listOfNotNull(
+            "a VM folder import is still running".takeIf { ImportState.running },
+        )
         if (problems.isNotEmpty()) {
             problems.forEach { VmState.addLine("error: $it") }
             VmState.set(VmState.Status.STOPPED)

@@ -4,4 +4,7 @@
     <string name="notif_channel">Virtual machine</string>
     <string name="notif_running">VM running</string>
     <string name="notif_stop">Stop</string>
+    <string name="import_channel">VM folder import</string>
+    <string name="import_running">Importing VM folder</string>
+    <string name="import_cancel">Cancel</string>
 </resources>

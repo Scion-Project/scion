@@ -83,6 +83,9 @@ every disk is present.
    ```sh
    tools/package_vm.py ~/InfernoData --push    # root disk → qcow2, writes vm.properties, adb push
    ```
+   Without adb, copy the `phone-vm` folder to the phone any way you like and
+   use **Import VM folder…** in the app. It streams the copy into the app's VM
+   folder, shows progress, checks free space first, and can be cancelled.
 3. **Build and install the app:**
    ```sh
    git submodule update --init
