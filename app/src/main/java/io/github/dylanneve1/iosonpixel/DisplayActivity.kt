@@ -13,17 +13,26 @@ import android.widget.Button
 import android.widget.LinearLayout
 import io.github.dylanneve1.iosonpixel.HardwareButton as Key
 
-/** Full-screen guest display plus the iPhone's hardware buttons. */
+/**
+ * Full-screen guest display plus the iPhone's hardware buttons. The display
+ * is the VM's own Surface output when the backend has one (QEMU in-process),
+ * else an RFB client ([ScreenView]).
+ */
 class DisplayActivity : Activity() {
     private lateinit var screen: ScreenView
+    private var surfaceScreen: SurfaceScreen? = null
     private var client: VmDisplay? = null
     private lateinit var backend: VmBackend
     private val onState: () -> Unit = {
         if (VmState.status == VmState.Status.STOPPED && !attachOnly) {
             client?.close()
             client = null
-            screen.placeholder = "VM stopped" + (VmState.lastExit?.let { " (exit $it)" } ?: "") + "; see the log"
+            placeholder("VM stopped" + (VmState.lastExit?.let { " (exit $it)" } ?: "") + "; see the log")
         }
+    }
+
+    private fun placeholder(text: String) {
+        surfaceScreen?.let { it.placeholder = text } ?: run { screen.placeholder = text }
     }
 
     /** Developer hook: `--ez attach true` connects even if the app didn't start the VM. */
@@ -35,6 +44,7 @@ class DisplayActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         screen = ScreenView(this)
+        surfaceScreen = backend.surfaceDisplay()?.let { SurfaceScreen(this, it) }
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -53,7 +63,7 @@ class DisplayActivity : Activity() {
         }
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(screen, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+            addView(surfaceScreen ?: screen, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
             addView(bar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         })
 
@@ -78,9 +88,11 @@ class DisplayActivity : Activity() {
 
     private fun connect() {
         if (VmState.status == VmState.Status.STOPPED && !attachOnly) {
-            screen.placeholder = "VM is not running"
+            placeholder("VM is not running")
             return
         }
+        // The Surface display attaches itself when its Surface exists.
+        if (surfaceScreen != null) return
         val c = backend.openDisplay(screen)
         screen.client = c
         screen.onDisconnect = { err ->
