@@ -10,9 +10,9 @@ Issue #48. Measured on the Android **emulator** (`sdk_gphone64_arm64`, 8 host co
   to "waiting for host". Average load is under one host core (≈0.95), so the boot is not
   throughput-bound.
 - **Fewer vCPUs is faster: 8.5 s with `-smp 2`.** With two or more application vCPUs,
-  restored's `enable_usb` step always takes **3.05 s**; with one it takes **0.06 s**. That
-  fixed wait is 23% of the boot. It looks like a missed or late cross-CPU wakeup in the
-  emulation, and it's the top lead below.
+  restored's `enable_usb` step takes **3.05 s** in nearly every run; with one it takes
+  **0.06 s**. That wait is 23% of the boot. It turned out to be a guest-side race, not a lost
+  wakeup in the emulation (#51, below). **For now, restore boots should use `-smp 2`.**
 - In host CPU (AP side), **34% runs guest code**. The biggest QEMU-side cost is
   **indirect-branch TB lookup (≈18%, `helper_lookup_tb_ptr` alone 12%)**, then translation,
   system-register helpers and TLB fills at about 6–7% each.
@@ -102,12 +102,16 @@ and the main loop takes about 4%.
 Estimated benefit is relative to the 13.1 s `-smp 4` boot.
 
 1. **The multi-vCPU 3 s stall (up to about 4.6 s, 35%).** With two or more application vCPUs,
-   `enable_usb` waits 3.05 s, and `launchd` → restored is about 1.8 s slower. A fixed ~3 s
-   suggests a wakeup that never arrives, so a timeout fires instead.
-   - *Investigate:* AIC IPI / Apple fast-IPI delivery to a vCPU halted in WFI, WFE/SEV
-     handling under MTTCG, and timer-interrupt kicks to idle vCPUs. Trace which CPU waits
-     and on what.
-   - *Interim:* use `-smp 2` for restore boots. It isn't yet known whether a normal boot to
+   `enable_usb` usually waits 3.05 s, and `launchd` → restored is about 1.8 s slower.
+   - *What it is (#51):* restored looks up `AppleUSBDeviceMux` before the kernel has
+     published it, then waits for the matching notification and resumes only on its own
+     ~2.8 s timeout. With one application vCPU the kernel always publishes first. Traces
+     rule out a lost emulated event: IPIs, AIC, timer latency, WFE, MTTCG, TLBI batching
+     and IOP mailboxes all behave correctly. It's still open why the notification doesn't
+     arrive sooner, so it may be ordinary iOS behaviour; a real-device restore log would
+     settle it.
+   - **Now: use `-smp 2` for restore boots.** Restore runs on the Mac in the user's flow,
+     so this doesn't block the phone path. It isn't yet known whether a normal boot to
      SpringBoard is also faster with fewer vCPUs; measure that before changing defaults.
 2. **Indirect-branch TB lookup (≈18% of CPU).** `helper_lookup_tb_ptr` is the
    `goto_ptr` path taken on returns and indirect jumps; `qht_lookup_custom` shows it often
@@ -154,10 +158,11 @@ Estimated benefit is relative to the 13.1 s `-smp 4` boot.
     `wfi` ROM's lock traffic slowed the profiled run to 38.6 s, so it isn't representative.
   - **On the phone, with real SEP inputs, check the SEP thread's CPU use.** A vCPU that
     keeps waking from WFI costs a whole host core (battery, thermals).
-- `restore_bench.py` takes only your own kit files and never downloads anything. The QEMU
-  binary is pushed under the unique name `qemu-restore-bench`, and each run is stopped with
-  `kill $(pidof qemu-restore-bench)`. It never pattern-kills: `pkill -f` matched the adb
-  shell itself during development.
+- `restore_bench.py` takes only your own kit files and never downloads anything. Each run
+  is stopped through QEMU's own `-pidfile`, never by name or pattern: `pkill -f` matched
+  the adb shell itself during development, and a name-based kill stops other people's runs
+  of the same tool. Each run picks a free USB uplink port (18030–18099) unless you pass
+  `--uplink`, so several runs can share one device (their timings still affect each other).
 - The adb shell can't create FIFOs in `/data/local/tmp` (SELinux), so serial is read
   through a pipe.
 
