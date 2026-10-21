@@ -40,6 +40,13 @@
                 android:value="Runs a user-started virtual machine (QEMU) until the user stops it." />
         </service>
 
+        <!-- In-process QEMU (VmSettings.inProcess): QEMU runs as a library here and
+             exits this process when it is done; bound by VmService. -->
+        <service
+            android:name=".QemuVmService"
+            android:exported="false"
+            android:process=":vm" />
+
         <service
             android:name=".ImportService"
             android:exported="false"

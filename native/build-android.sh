@@ -2,7 +2,10 @@
 # Cross-compiles the Inferno QEMU fork (and its dependencies) for Android arm64,
 # tuned for Tensor G5, and drops the result into app/src/main/jniLibs.
 #
-# Usage: native/build-android.sh [deps|qemu|all]   (default: all)
+# Usage: native/build-android.sh [deps|qemu|qemu-lib|all]   (default: all)
+#
+# `qemu` builds the executable and, unless NO_QEMU_LIB=1, also the in-process
+# variant: QEMU as a shared library plus the JNI shim that calls it.
 #
 # Env overrides:
 #   ANDROID_NDK_HOME  NDK root (default: newest under ~/Library/Android/sdk/ndk)
@@ -245,12 +248,13 @@ build_deps() {
   build_pixman
 }
 
-configure_qemu() { # builddir
+configure_qemu() { # builddir [extra meson args...]
+  local b="$1"; shift
   # Inferno dev dropped QEMU's ./configure wrapper; drive meson directly.
   # It only builds aarch64-softmmu now, so there is no target list to pass.
   # dev pulls libyuv (CMake), mlib and keycodemapdb in as meson subprojects.
   env -u AR -u NM -u RANLIB -u STRIP -u OBJCOPY -u LD CC="$WORK/host-cc" CXX="$WORK/host-c++" \
-    meson setup "$1" "$SRC_QEMU" --cross-file "$WORK/android-arm64-qemu.cross" \
+    meson setup "$b" "$SRC_QEMU" --cross-file "$WORK/android-arm64-qemu.cross" \
     --buildtype=release --wrap-mode=default -Dwerror=false -Ddebug=false \
     -Ddefault_library=static -Dtools=disabled -Dqom_cast_debug=false -Dtrace_backends=log \
     -Dkvm=disabled -Dhvf=disabled -Dwhpx=disabled -Dtcg=enabled \
@@ -262,7 +266,7 @@ configure_qemu() { # builddir
     -Dusb_redir=disabled -Dseccomp=disabled -Dcap_ng=disabled -Dxkbcommon=disabled \
     -Dvde=disabled -Dalsa=disabled -Doss=disabled -Dpa=disabled -Dpipewire=disabled \
     -Djack=disabled -Dsndio=disabled -Dfuse=disabled -Dmultiprocess=disabled \
-    -Dvalgrind=disabled -Dlibkeyutils=disabled -Dauth_pam=disabled -Dbrlapi=disabled
+    -Dvalgrind=disabled -Dlibkeyutils=disabled -Dauth_pam=disabled -Dbrlapi=disabled "$@"
 }
 
 build_qemu() {
@@ -281,12 +285,34 @@ build_qemu() {
   # en-us at start, so ship our vendored copy (GPL-2.0, from QEMU).
   cp "$NATIVE/keymaps/en-us" "$ASSET_OUT/keymaps/"
   echo "installed $JNI_OUT/libqemu-system-aarch64.so"
+  [[ -n "${NO_QEMU_LIB:-}" ]] || build_qemu_lib
+}
+
+# The in-process variant (app setting "Run QEMU in-process"): the same QEMU as
+# a shared library exporting qemu_android_main(), which QemuVmService calls
+# through native/qemu_jni.c. It needs PIC static libraries, which would change
+# the executable's code (PIC instead of PIE), so it gets its own build tree.
+build_qemu_lib() {
+  local b="$WORK/qemu-shared"
+  if ! grep -q "system_shared_lib" "$SRC_QEMU/meson_options.txt"; then
+    echo "skipping the in-process library: this Inferno has no system_shared_lib option yet" >&2
+    return
+  fi
+  if [[ -n "${FRESH:-}" || ! -f "$b/build.ninja" ]]; then
+    rm -rf "$b"
+    configure_qemu "$b" -Dsystem_shared_lib=true -Db_staticpic=true
+  fi
+  ninja -C "$b" -j"$JOBS" libqemu-system-aarch64-shared.so
+  "$STRIP" -o "$JNI_OUT/libqemu-system-aarch64-shared.so" "$b/libqemu-system-aarch64-shared.so"
+  "$CC" $OPT_CFLAGS -shared -Wl,-z,max-page-size=16384 -o "$JNI_OUT/libqemu_jni.so" "$NATIVE/qemu_jni.c"
+  echo "installed $JNI_OUT/libqemu-system-aarch64-shared.so and libqemu_jni.so"
 }
 
 case "${1:-all}" in
   deps) build_deps ;;
   qemu) build_qemu ;;
+  qemu-lib) build_qemu_lib ;;
   all) build_deps; build_qemu ;;
   gmp|nettle|tasn1|lz4|lzfse|glib|pixman) "build_$1" ;;
-  *) echo "usage: $0 [deps|qemu|all|gmp|nettle|tasn1|lz4|lzfse|glib|pixman]" >&2; exit 2 ;;
+  *) echo "usage: $0 [deps|qemu|qemu-lib|all|gmp|nettle|tasn1|lz4|lzfse|glib|pixman]" >&2; exit 2 ;;
 esac

@@ -136,10 +136,14 @@ jobs:
       - name: Verify build outputs exist
         run: |
           so=app/src/main/jniLibs/arm64-v8a/libqemu-system-aarch64.so
+          # In-process variant (#31): QEMU as a library + the JNI shim.
+          lib=app/src/main/jniLibs/arm64-v8a/libqemu-system-aarch64-shared.so
+          jni=app/src/main/jniLibs/arm64-v8a/libqemu_jni.so
           apk=app/build/outputs/apk/debug/app-debug.apk
-          test -f "$so"  || { echo "missing native library: $so"; exit 1; }
-          test -f "$apk" || { echo "missing APK: $apk"; exit 1; }
-          ls -lh "$so" "$apk"
+          for f in "$so" "$lib" "$jni" "$apk"; do
+            test -f "$f" || { echo "missing build output: $f"; exit 1; }
+          done
+          ls -lh "$so" "$lib" "$jni" "$apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4.6.0

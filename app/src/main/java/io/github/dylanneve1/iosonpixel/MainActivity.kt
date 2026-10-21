@@ -38,6 +38,7 @@ class MainActivity : Activity() {
     private lateinit var tbSize: EditText
     private lateinit var affinity: EditText
     private lateinit var splitWx: Switch
+    private lateinit var inProcess: Switch
     private lateinit var backendGroup: RadioGroup
 
     private val onState: () -> Unit = { render() }
@@ -111,6 +112,12 @@ class MainActivity : Activity() {
         splitWx = Switch(this).apply {
             text = "Split W^X JIT mapping (try if QEMU fails to allocate its code buffer)"
             isChecked = s.splitWx
+        }.also { root.addView(it) }
+        inProcess = Switch(this).apply {
+            text = "Run QEMU in-process (library in a separate :vm process instead of a child process; experimental)"
+            isChecked = s.inProcess
+            // The checks above depend on it, so apply it right away.
+            setOnCheckedChangeListener { _, _ -> saveSettings(); render() }
         }.also { root.addView(it) }
 
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -195,6 +202,7 @@ class MainActivity : Activity() {
             smp = smp.text.toString().toIntOrNull()?.coerceIn(1, 8) ?: d.smp,
             tbSizeMb = tbSize.text.toString().toIntOrNull()?.coerceIn(64, 4096) ?: d.tbSizeMb,
             splitWx = splitWx.isChecked,
+            inProcess = inProcess.isChecked,
             vcpuAffinity = affinity.text.toString().trim(),
             backend = Backend.entries.firstOrNull { it.ordinal + 1 == backendGroup.checkedRadioButtonId } ?: d.backend,
         ).save(this)
