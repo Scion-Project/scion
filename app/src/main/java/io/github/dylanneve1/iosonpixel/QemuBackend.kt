@@ -23,7 +23,8 @@ class QemuBackend(ctx: Context) : VmBackend {
     private val libOk get() = paths.qemuLib.isFile && paths.qemuJni.isFile
 
     override fun checks(): List<VmBackend.Check> {
-        val problems = VmLayout(paths.vmDir).problems()
+        val vm = VmLayout(paths.vmDir)
+        val problems = vm.problems()
         val qemuOk = paths.qemu.isFile
         return buildList {
             add(
@@ -35,6 +36,7 @@ class QemuBackend(ctx: Context) : VmBackend {
             )
             if (problems.isEmpty()) add(VmBackend.Check(true, "VM folder looks complete"))
             else problems.forEach { add(VmBackend.Check(false, it)) }
+            vm.ramdisk?.takeIf { it.isFile }?.let { add(VmBackend.Check(true, "ramdisk ${it.name} (passed as -initrd)")) }
         }
     }
 
@@ -158,6 +160,10 @@ object QemuCommand {
             "-accel", accel,
             "-kernel", path("kernel"),
             "-dtb", path("dtb"),
+        )
+        // Optional restore ramdisk; without the key the command is unchanged.
+        vm.ramdisk?.takeIf { it.isFile }?.let { args += listOf("-initrd", it.absolutePath) }
+        args += listOf(
             "-append", "tlto_us=-1 mtxspin=-1 agm-genuine=1 agm-authentic=1 agm-trusted=1 " +
                 "serial=3 wdt=-1 -vm_compressor_wk_sw",
             "-smp", s.smp.toString(),
