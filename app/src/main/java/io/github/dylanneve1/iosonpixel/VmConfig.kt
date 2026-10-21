@@ -166,6 +166,11 @@ class AppPaths(ctx: Context) {
     val monitorSocket = File(ctx.filesDir, "monitor.sock")
     /** QMP, for multi-touch input ([QmpTouch]). */
     val qmpSocket = File(ctx.filesDir, "qmp.sock")
+    /**
+     * Where the emulated iPhone's USB uplink connects out to. t8030 otherwise
+     * defaults to a TCP listener, which needs the INTERNET permission (#67).
+     */
+    val usbUplinkSocket = File(ctx.filesDir, "usb-uplink.sock")
     val logFile = File(ctx.getExternalFilesDir(null), "qemu.log")
     val tmpDir: File = ctx.cacheDir
 
