@@ -12,12 +12,15 @@ import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 
 class MainActivity : Activity() {
     private lateinit var paths: AppPaths
+    private lateinit var backend: VmBackend
     private lateinit var status: TextView
     private lateinit var checks: TextView
     private lateinit var log: TextView
@@ -29,6 +32,7 @@ class MainActivity : Activity() {
     private lateinit var tbSize: EditText
     private lateinit var affinity: EditText
     private lateinit var splitWx: Switch
+    private lateinit var backendGroup: RadioGroup
 
     private val onState: () -> Unit = { render() }
 
@@ -37,6 +41,7 @@ class MainActivity : Activity() {
         paths = AppPaths(this)
         paths.vmDir.mkdirs()
         val s = VmSettings.load(this)
+        backend = VmBackend.create(this, s.backend)
         val pad = (16 * resources.displayMetrics.density).toInt()
 
         val root = LinearLayout(this).apply {
@@ -63,6 +68,25 @@ class MainActivity : Activity() {
         text(12f).text = "VM folder (adb push your prepared files here):\n${paths.vmDir.absolutePath}"
         checks = text(12f, mono = true)
 
+        text().text = "VM backend"
+        backendGroup = RadioGroup(this).also { root.addView(it) }
+        for (b in Backend.entries) {
+            backendGroup.addView(RadioButton(this).apply {
+                id = b.ordinal + 1
+                text = when (b) {
+                    Backend.QEMU -> "QEMU (software emulation)"
+                    Backend.AVF -> "AVF (hardware virtualization)"
+                }
+                isEnabled = b.implemented
+            })
+        }
+        backendGroup.check(s.backend.ordinal + 1)
+        val avf = AvfSupport.check(this)
+        text(12f).text = "AVF: experimental, see ios-on-pixel-avf. Not selectable in this build.\n" +
+            "This device:\n" +
+            (if (avf.hasFeature) "✓" else "✗") + " advertises ${AvfSupport.FEATURE}\n" +
+            (if (avf.hasPermission) "✓" else "✗") + " MANAGE_VIRTUAL_MACHINE granted"
+
         ram = field("Guest RAM (GiB)", s.ramGb.toString())
         smp = field("vCPUs (6 application cores + 1 SEP)", s.smp.toString())
         tbSize = field("JIT translation cache (MiB)", s.tbSizeMb.toString())
@@ -82,7 +106,7 @@ class MainActivity : Activity() {
         listOf(start, stop, display).forEach { buttons.addView(it, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)) }
         root.addView(buttons)
 
-        text().text = "QEMU output"
+        text().text = "${backend.kind.label} output"
         log = text(10f, mono = true)
 
         setContentView(ScrollView(this).apply { addView(root, MATCH_PARENT, WRAP_CONTENT) })
@@ -114,15 +138,10 @@ class MainActivity : Activity() {
         status.text = "Status: ${st.name.lowercase()}" +
             (VmState.lastExit?.takeIf { st == VmState.Status.STOPPED }?.let { " (last exit $it)" } ?: "")
 
-        val problems = VmLayout(paths.vmDir).problems()
-        val qemuOk = paths.qemu.isFile
-        checks.text = buildString {
-            appendLine(if (qemuOk) "✓ QEMU binary bundled" else "✗ QEMU binary missing (run native/build-android.sh)")
-            if (problems.isEmpty()) appendLine("✓ VM folder looks complete")
-            else problems.forEach { appendLine("✗ $it") }
-        }.trimEnd()
+        val list = backend.checks()
+        checks.text = list.joinToString("\n") { (if (it.ok) "✓ " else "✗ ") + it.text }
 
-        start.isEnabled = st == VmState.Status.STOPPED && qemuOk && problems.isEmpty()
+        start.isEnabled = st == VmState.Status.STOPPED && list.all { it.ok }
         stop.isEnabled = st == VmState.Status.RUNNING || st == VmState.Status.STARTING
         log.text = VmState.log()
     }
@@ -135,6 +154,7 @@ class MainActivity : Activity() {
             tbSizeMb = tbSize.text.toString().toIntOrNull()?.coerceIn(64, 4096) ?: d.tbSizeMb,
             splitWx = splitWx.isChecked,
             vcpuAffinity = affinity.text.toString().trim(),
+            backend = Backend.entries.firstOrNull { it.ordinal + 1 == backendGroup.checkedRadioButtonId } ?: d.backend,
         ).save(this)
     }
 

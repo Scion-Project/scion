@@ -11,14 +11,13 @@ import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
-import io.github.dylanneve1.iosonpixel.Monitor.Button as Key
-import io.github.dylanneve1.iosonpixel.rfb.RfbClient
+import io.github.dylanneve1.iosonpixel.HardwareButton as Key
 
 /** Full-screen guest display plus the iPhone's hardware buttons. */
 class DisplayActivity : Activity() {
     private lateinit var screen: ScreenView
-    private var client: RfbClient? = null
-    private lateinit var paths: AppPaths
+    private var client: VmDisplay? = null
+    private lateinit var backend: VmBackend
     private val onState: () -> Unit = {
         if (VmState.status == VmState.Status.STOPPED && !attachOnly) {
             client?.close()
@@ -32,7 +31,7 @@ class DisplayActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        paths = AppPaths(this)
+        backend = VmBackend.current(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         screen = ScreenView(this)
@@ -40,16 +39,16 @@ class DisplayActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             setBackgroundColor(Color.rgb(20, 20, 20))
-            addButton("Vol−") { Monitor.press(paths, Key.VOLUME_DOWN) }
-            addButton("Vol+") { Monitor.press(paths, Key.VOLUME_UP) }
-            addButton("Home") { Monitor.press(paths, Key.HOME) }
+            addButton("Vol−") { backend.press(Key.VOLUME_DOWN) }
+            addButton("Vol+") { backend.press(Key.VOLUME_UP) }
+            addButton("Home") { backend.press(Key.HOME) }
             addButton("Apps") {
                 // Double-press Home opens the app switcher.
-                Monitor.press(paths, Key.HOME)
-                Monitor.press(paths, Key.HOME)
+                backend.press(Key.HOME)
+                backend.press(Key.HOME)
             }
-            addButton("Power", onLong = { Monitor.press(paths, Key.POWER, holdMs = 3000) }) {
-                Monitor.press(paths, Key.POWER)
+            addButton("Power", onLong = { backend.press(Key.POWER, holdMs = 3000) }) {
+                backend.press(Key.POWER)
             }
         }
         setContentView(LinearLayout(this).apply {
@@ -82,7 +81,7 @@ class DisplayActivity : Activity() {
             screen.placeholder = "VM is not running"
             return
         }
-        val c = RfbClient(paths.vncSocket, screen)
+        val c = backend.openDisplay(screen)
         screen.client = c
         screen.onDisconnect = { err ->
             screen.placeholder = if (err != null) "Display disconnected: ${err.message}" else "Display closed"

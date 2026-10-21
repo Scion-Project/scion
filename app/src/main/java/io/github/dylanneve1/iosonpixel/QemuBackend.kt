@@ -1,0 +1,163 @@
+package io.github.dylanneve1.iosonpixel
+
+import android.content.Context
+import io.github.dylanneve1.iosonpixel.rfb.RfbClient
+import java.io.File
+import java.io.FileWriter
+import java.util.concurrent.TimeUnit
+
+/**
+ * Software emulation: our Inferno build runs as a child process, its display
+ * is QEMU's VNC server on a unix socket (read by [RfbClient]) and the buttons
+ * go through the human monitor ([Monitor]).
+ */
+class QemuBackend(ctx: Context) : VmBackend {
+    private val app = ctx.applicationContext
+    private val paths = AppPaths(app)
+
+    override val kind = Backend.QEMU
+
+    override fun checks(): List<VmBackend.Check> {
+        val problems = VmLayout(paths.vmDir).problems()
+        val qemuOk = paths.qemu.isFile
+        return buildList {
+            add(
+                if (qemuOk) VmBackend.Check(true, "QEMU binary bundled")
+                else VmBackend.Check(false, "QEMU binary missing (run native/build-android.sh)"),
+            )
+            if (problems.isEmpty()) add(VmBackend.Check(true, "VM folder looks complete"))
+            else problems.forEach { add(VmBackend.Check(false, it)) }
+        }
+    }
+
+    override fun problems(): List<String> = VmLayout(paths.vmDir).problems() + listOfNotNull(
+        "QEMU binary not bundled in this build".takeIf { !paths.qemu.isFile },
+    )
+
+    override fun start(settings: VmSettings, log: (String) -> Unit): VmBackend.Instance? {
+        val vm = VmLayout(paths.vmDir)
+        installDataFiles()
+        paths.vncSocket.delete()
+        paths.monitorSocket.delete()
+
+        val cmd = QemuCommand.build(paths, vm, settings)
+        log("$ " + cmd.joinToString(" "))
+
+        val pb = ProcessBuilder(cmd).directory(vm.dir).redirectErrorStream(true)
+        pb.environment()["TMPDIR"] = paths.tmpDir.absolutePath
+        if (settings.vcpuAffinity.isNotBlank()) {
+            pb.environment()["QEMU_VCPU_AFFINITY"] = settings.vcpuAffinity
+        }
+
+        return try {
+            Instance(pb.start())
+        } catch (e: Exception) {
+            log("error: failed to start QEMU: $e")
+            null
+        }
+    }
+
+    override fun openDisplay(listener: VmDisplay.Listener): VmDisplay = RfbClient(paths.vncSocket, listener)
+
+    override fun press(button: HardwareButton, holdMs: Int) = Monitor.press(paths, key(button), holdMs)
+
+    /** Inferno maps the buttons to F-keys (see its "Using the Device's Buttons"). */
+    private fun key(button: HardwareButton) = when (button) {
+        HardwareButton.POWER -> "f5"
+        HardwareButton.HOME -> "f6"
+        HardwareButton.VOLUME_DOWN -> "f3"
+        HardwareButton.VOLUME_UP -> "f4"
+        HardwareButton.RINGER -> "f2"
+    }
+
+    private inner class Instance(private val p: Process) : VmBackend.Instance {
+        override val isAlive get() = p.isAlive
+
+        override fun pump(onLine: (String) -> Unit): Int {
+            FileWriter(paths.logFile, false).use { log ->
+                p.inputStream.bufferedReader().forEachLine { line ->
+                    log.write(line); log.write("\n"); log.flush()
+                    onLine(line)
+                }
+            }
+            return p.waitFor()
+        }
+
+        override fun stop() {
+            // Ask QEMU to quit cleanly first so disk images are flushed.
+            Monitor(paths).send("quit")
+            if (!p.waitFor(10, TimeUnit.SECONDS)) {
+                p.destroy()
+                if (!p.waitFor(5, TimeUnit.SECONDS)) p.destroyForcibly()
+            }
+        }
+
+        override fun kill() = p.destroy()
+    }
+
+    /** Copies keymaps etc. from assets so QEMU's -L data dir is populated. */
+    private fun installDataFiles() {
+        val assets = app.assets
+        fun copy(assetPath: String, dest: File) {
+            val children = assets.list(assetPath).orEmpty()
+            if (children.isEmpty()) {
+                dest.parentFile?.mkdirs()
+                assets.open(assetPath).use { input -> dest.outputStream().use { input.copyTo(it) } }
+            } else {
+                children.forEach { copy("$assetPath/$it", File(dest, it)) }
+            }
+        }
+        if (assets.list("qemu-data").orEmpty().isNotEmpty()) copy("qemu-data", paths.dataDir)
+    }
+}
+
+object QemuCommand {
+    /** Mirrors the sample command from the Inferno guide, minus host-only display flags. */
+    fun build(paths: AppPaths, vm: VmLayout, s: VmSettings): List<String> {
+        fun path(key: String) = vm.file(key)!!.absolutePath
+        val machine = listOf(
+            "t8030",
+            "trustcache=${path("trustcache")}",
+            "sep-fw=${path("sep_fw")}",
+            "sep-rom=${path("sep_rom")}",
+            "kaslr-off=true",
+        ).joinToString(",")
+
+        val accel = buildString {
+            append("tcg,thread=multi,tb-size=").append(s.tbSizeMb)
+            if (s.splitWx) append(",split-wx=on")
+        }
+
+        val args = mutableListOf(
+            paths.qemu.absolutePath,
+            "-L", paths.dataDir.absolutePath,
+            "-M", machine,
+            "-accel", accel,
+            "-kernel", path("kernel"),
+            "-dtb", path("dtb"),
+            "-append", "tlto_us=-1 mtxspin=-1 agm-genuine=1 agm-authentic=1 agm-trusted=1 " +
+                "serial=3 wdt=-1 -vm_compressor_wk_sw",
+            "-smp", s.smp.toString(),
+            "-m", "${s.ramGb}G",
+            "-display", "none",
+            "-vnc", "unix:${paths.vncSocket.absolutePath}",
+            "-monitor", "unix:${paths.monitorSocket.absolutePath},server=on,wait=off",
+            "-serial", "stdio",
+            // Shared storage is FUSE-backed; OFD locks there are unreliable.
+            "-drive", "file=sep_nvram,if=pflash,format=raw,file.locking=off",
+            "-drive", "file=sep_ssc,if=pflash,format=raw,file.locking=off",
+        )
+
+        fun nvme(id: String, file: String, format: String, device: String, nsid: Int, nstype: Int) {
+            args += listOf(
+                "-drive", "file=$file,format=$format,if=none,id=$id,file.locking=off",
+                "-device", "$device,drive=$id,bus=nvme-bus.0,nsid=$nsid,nstype=$nstype," +
+                    (if (device == "apple-nvram") "id=$id," else "") +
+                    "logical_block_size=4096,physical_block_size=4096",
+            )
+        }
+        nvme("root", vm.file("root")!!.name, vm.rootFormat, "nvme-ns", 1, 1)
+        for (ns in VmLayout.SMALL_DISKS) nvme(ns.name, ns.name, "raw", ns.device, ns.nsid, ns.nstype)
+        return args
+    }
+}

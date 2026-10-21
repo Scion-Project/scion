@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Not used yet: requested so the AVF capability check can see an adb grant
+         (adb shell pm grant <pkg> android.permission.MANAGE_VIRTUAL_MACHINE). -->
+    <uses-permission android:name="android.permission.MANAGE_VIRTUAL_MACHINE" />
 
     <application
         android:extractNativeLibs="true"
