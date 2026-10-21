@@ -252,7 +252,7 @@ configure_qemu() { # builddir
   env -u AR -u NM -u RANLIB -u STRIP -u OBJCOPY -u LD CC="$WORK/host-cc" CXX="$WORK/host-c++" \
     meson setup "$1" "$SRC_QEMU" --cross-file "$WORK/android-arm64-qemu.cross" \
     --buildtype=release --wrap-mode=default -Dwerror=false -Ddebug=false \
-    -Ddefault_library=static -Dtools=disabled -Dqom_cast_debug=false \
+    -Ddefault_library=static -Dtools=disabled -Dqom_cast_debug=false -Dtrace_backends=log \
     -Dkvm=disabled -Dhvf=disabled -Dwhpx=disabled -Dtcg=enabled \
     -Dvnc=enabled -Dvnc_jpeg=disabled -Dpng=disabled -Dvnc_sasl=disabled \
     -Dgnutls=disabled -Dsdl=disabled -Dsdl_image=disabled -Dgtk=disabled -Dvte=disabled \
