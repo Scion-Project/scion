@@ -3,6 +3,7 @@ package io.github.dylanneve1.iosonpixel
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.os.Bundle
@@ -20,6 +21,7 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
+import java.io.File
 
 class MainActivity : Activity() {
     private lateinit var paths: AppPaths
@@ -32,6 +34,8 @@ class MainActivity : Activity() {
     private lateinit var importButton: Button
     private lateinit var importStatus: TextView
     private lateinit var importProgress: ProgressBar
+    private lateinit var location: TextView
+    private lateinit var moveButton: Button
 
     private lateinit var ram: EditText
     private lateinit var smp: EditText
@@ -46,7 +50,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         paths = AppPaths(this)
-        paths.vmDir.mkdirs()
+        paths.sharedVmDir.mkdirs()
         DebugBundle.install(this)
         val s = VmSettings.load(this)
         backend = VmBackend.create(this, s.backend)
@@ -73,13 +77,20 @@ class MainActivity : Activity() {
         root.isFocusableInTouchMode = true
         root.requestFocus()
         status = text(16f)
-        text(12f).text = "VM folder (adb push your prepared files here, or import them):\n${paths.vmDir.absolutePath}"
+        location = text(12f)
         checks = text(12f, mono = true)
 
         importButton = Button(this).apply {
             setOnClickListener {
                 if (ImportState.running) ImportService.cancel(this@MainActivity)
                 else startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_IMPORT)
+            }
+        }.also { root.addView(it, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)) }
+        // "Keep VM in internal storage": moves the folder out of FUSE-backed shared storage.
+        moveButton = Button(this).apply {
+            setOnClickListener {
+                if (ImportState.running) ImportService.cancel(this@MainActivity)
+                else ImportService.move(this@MainActivity, toInternal = moveToInternal())
             }
         }.also { root.addView(it, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)) }
         importProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
@@ -153,10 +164,17 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
         }
 
-        // Developer hook (DisplayActivity isn't exported):
+        // Developer hooks. This activity is exported, so only honour them in debuggable builds.
+        val debuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        // DisplayActivity isn't exported:
         //   adb shell am start -n <pkg>/.MainActivity --ez attach true
-        if (intent.getBooleanExtra(DisplayActivity.EXTRA_ATTACH, false)) {
+        if (debuggable && intent.getBooleanExtra(DisplayActivity.EXTRA_ATTACH, false)) {
             startActivity(Intent(this, DisplayActivity::class.java).putExtra(DisplayActivity.EXTRA_ATTACH, true))
+        }
+        // Shared vs internal storage throughput, logged (see StorageBench).
+        if (debuggable && intent.getBooleanExtra("storage_bench", false)) {
+            val mb = intent.getIntExtra("storage_bench_mb", 100).coerceIn(1, 1024)
+            Thread({ StorageBench.run(applicationContext, mb) }, "storage-bench").start()
         }
     }
 
@@ -181,9 +199,32 @@ class MainActivity : Activity() {
         val list = backend.checks()
         checks.text = list.joinToString("\n") { (if (it.ok) "✓ " else "✗ ") + it.text }
 
+        val internal = paths.vmInternal
+        val sharedHasVm = File(paths.sharedVmDir, VmLayout.MANIFEST).isFile
+        location.text = buildString {
+            append("VM in use: ")
+            append(if (internal) "internal app storage" else "shared storage")
+            append("\n").append(paths.vmDir.absolutePath)
+            append("\n\nadb push your prepared files to:\n").append(paths.sharedVmDir.absolutePath)
+            if (internal) {
+                append("\nthen move them to internal storage")
+                if (sharedHasVm) append("\n⚠ shared storage holds a VM that is not in use")
+            }
+            append("\nor import them (into the folder in use).")
+        }
+
         val importing = ImportState.running
-        importButton.text = if (importing) "Cancel import" else "Import VM folder…"
-        importButton.isEnabled = importing || st == VmState.Status.STOPPED
+        val moving = importing && ImportState.moving
+        importButton.text = if (importing && !moving) "Cancel import" else "Import VM folder…"
+        importButton.isEnabled = (importing && !moving) || (!importing && st == VmState.Status.STOPPED)
+        val toInternal = moveToInternal()
+        moveButton.text = when {
+            moving -> "Cancel move"
+            !toInternal -> "Move VM back to shared storage"
+            internal -> "Move the shared-storage VM to internal (replaces the one in use)"
+            else -> "Keep VM in internal storage (move it there)"
+        }
+        moveButton.isEnabled = moving || (!importing && st == VmState.Status.STOPPED && (!toInternal || sharedHasVm))
         importProgress.visibility = if (importing) View.VISIBLE else View.GONE
         importProgress.isIndeterminate = importing && ImportState.total == 0L
         if (ImportState.total > 0) importProgress.progress = (ImportState.copied * 1000 / ImportState.total).toInt()
@@ -194,6 +235,9 @@ class MainActivity : Activity() {
         stop.isEnabled = st == VmState.Status.RUNNING || st == VmState.Status.STARTING
         log.text = VmState.log()
     }
+
+    /** The move button's direction: into internal storage unless the VM is already there and nothing newer is in shared. */
+    private fun moveToInternal() = !paths.vmInternal || File(paths.sharedVmDir, VmLayout.MANIFEST).isFile
 
     private fun saveSettings() {
         val d = VmSettings()
