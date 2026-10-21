@@ -248,8 +248,23 @@ build_deps() {
   build_pixman
 }
 
+# Fetch the meson wrap subprojects up front, with retries. libyuv comes from
+# chromium.googlesource.com, which intermittently answers 503; inside
+# `meson setup` that one failed clone kills the whole build. Already-present
+# subprojects are skipped, so this is a no-op after the first success.
+prefetch_wraps() {
+  local i
+  for i in 1 2 3 4 5; do
+    meson subprojects download --sourcedir "$SRC_QEMU" && return 0
+    echo "meson subprojects download failed (attempt $i/5); retrying in $((i * 15))s" >&2
+    sleep $((i * 15))
+  done
+  return 1
+}
+
 configure_qemu() { # builddir [extra meson args...]
   local b="$1"; shift
+  prefetch_wraps
   # Inferno dev dropped QEMU's ./configure wrapper; drive meson directly.
   # It only builds aarch64-softmmu now, so there is no target list to pass.
   # dev pulls libyuv (CMake), mlib and keycodemapdb in as meson subprojects.
