@@ -8,6 +8,7 @@ import android.graphics.Typeface
 import android.os.Bundle
 import android.text.InputType
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import android.view.WindowInsets
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
 import android.widget.EditText
@@ -109,7 +110,17 @@ class MainActivity : Activity() {
         text().text = "${backend.kind.label} output"
         log = text(10f, mono = true)
 
-        setContentView(ScrollView(this).apply { addView(root, MATCH_PARENT, WRAP_CONTENT) })
+        setContentView(ScrollView(this).apply {
+            addView(root, MATCH_PARENT, WRAP_CONTENT)
+            // targetSdk 35+ is always edge-to-edge: the content starts under the
+            // status/action bar, which hid the first lines. Pad by the insets.
+            clipToPadding = false
+            setOnApplyWindowInsetsListener { v, insets ->
+                val i = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                v.setPadding(i.left, i.top, i.right, i.bottom)
+                insets
+            }
+        })
 
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
