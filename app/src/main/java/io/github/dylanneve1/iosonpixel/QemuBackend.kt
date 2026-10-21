@@ -151,8 +151,8 @@ object QemuCommand {
         fun nvme(id: String, file: String, format: String, device: String, nsid: Int, nstype: Int) {
             args += listOf(
                 "-drive", "file=$file,format=$format,if=none,id=$id,file.locking=off",
-                "-device", "$device,drive=$id,bus=nvme-bus.0,nsid=$nsid,nstype=$nstype," +
-                    (if (device == "apple-nvram") "id=$id," else "") +
+                // Inferno dev looks namespaces up by id (e.g. peripheral/firmware).
+                "-device", "$device,drive=$id,bus=nvme-bus.0,nsid=$nsid,nstype=$nstype,id=$id," +
                     "logical_block_size=4096,physical_block_size=4096",
             )
         }
