@@ -106,10 +106,16 @@ needed three more things beyond the above:
 
 ## Architecture recap
 
+* **Backends:** the VM engine sits behind `VmBackend` (start/stop, readiness
+  checks, display, buttons), chosen by `VmSettings.backend`. `QemuBackend` is
+  the only implementation; AVF is listed on the main screen but disabled
+  until ios-on-pixel-avf has something that boots. Everything below is the
+  QEMU backend.
 * QEMU runs as a **child process** (`libqemu-system-aarch64.so` in
   `nativeLibraryDir`, `useLegacyPackaging = true` so it's extracted and
-  executable). `VmService` is a `specialUse` foreground service that holds a
-  partial wake lock and pipes stdout/stderr to `qemu.log` and to `VmState`.
+  executable), launched by `QemuBackend`. `VmService` is a `specialUse`
+  foreground service that holds the running instance and a partial wake lock
+  and pipes stdout/stderr to `qemu.log` and to `VmState`.
 * **Display:** `-display none -vnc unix:files/vnc.sock`, read by `rfb/RfbClient.kt`
   (RFB 3.8, no auth, raw + DesktopSize). Pixels are requested as LE 0x00RRGGBB
   and ORed to opaque ARGB.
