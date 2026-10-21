@@ -18,9 +18,9 @@
 # which runs under Rosetta 2 on arm64 runners (installed below). If that ever
 # breaks, switch to an Intel image (macos-13) and drop the Rosetta step.
 #
-# NOTE before enabling: see CI-NOTES.md. Action versions are pinned to real tags
-# but should ideally be re-pinned to commit SHAs, and the full build's runtime on
-# hosted runners must be measured against the timeout below.
+# See docs/ios27/CI-NOTES.md for choices, measured timings and maintenance.
+# Action versions are pinned to real, long-published tags (consider re-pinning
+# to commit SHAs).
 
 name: CI
 
@@ -51,9 +51,8 @@ jobs:
   # ---------------------------------------------------------------------------
   full-build:
     runs-on: macos-14
-    # deps (~10 min) + QEMU cross-build (dev was 1056/1056 ninja steps) + gradle.
-    # Hosted macOS runners are slower than a dev Mac; measure and tighten this.
-    timeout-minutes: 150
+    # Measured ~7.5 min cold (deps + 1056-step QEMU build + gradle); ample headroom.
+    timeout-minutes: 45
     steps:
       - name: Checkout (with the Inferno submodule)
         uses: actions/checkout@v4.2.2
@@ -132,7 +131,8 @@ jobs:
         run: ./gradlew --no-daemon assembleDebug
 
       # Fail loudly before the upload if either expected output is missing.
-      # Reference sizes from the verified build: .so ~12 MB, APK ~10.6 MB.
+      # Clean CI build: .so ~11.8 MB, APK ~6.0 MB (incremental local APKs are
+      # larger with the same contents; see docs/ios27/CI-NOTES.md).
       - name: Verify build outputs exist
         run: |
           so=app/src/main/jniLibs/arm64-v8a/libqemu-system-aarch64.so
@@ -165,7 +165,8 @@ jobs:
   # ---------------------------------------------------------------------------
   light-build:
     runs-on: macos-14
-    timeout-minutes: 60
+    # Measured ~5.5 min.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4.2.2

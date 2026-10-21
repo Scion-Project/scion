@@ -1,10 +1,9 @@
 # CI notes (ci.yaml)
 
-Draft GitHub Actions workflow for a lead to review before committing to
-`.github/workflows/ci.yaml`. It implements suggested next step #2 in
+`.github/workflows/ci.yaml` implements suggested next step #2 in
 `docs/HANDOFF.md`: build with `native/build-android.sh`, then
-`./gradlew assembleDebug`, and upload the APK. Nothing here was run; the repo
-was not touched.
+`./gradlew assembleDebug`, and upload the APK. Both jobs pass on hosted
+runners (first green run: 39602151945).
 
 ## 1. Summary
 
@@ -12,12 +11,23 @@ Two jobs, both on `macos-14`:
 
 | Job | What it builds | Rough cost | Purpose |
 |---|---|---|---|
-| `full-build` | static deps + full QEMU cross-build + `assembleDebug` | long (see timeout) | the real `app-debug.apk` artifact |
-| `light-build` | static deps + stub `.so` + `lint`/`assembleDebug` | ~minutes | fast gate; still exercises NDK/meson + the whole AGP build |
+| `full-build` | static deps + full QEMU cross-build + `assembleDebug` | ~7.5 min cold (measured) | the real `app-debug.apk` artifact |
+| `light-build` | static deps + stub `.so` + `lint`/`assembleDebug` | ~5.5 min (measured) | fast gate; still exercises NDK/meson + the whole AGP build |
 
-Both run on push/PR today. If runner minutes matter, flip it: make
-`light-build` the push/PR gate and move `full-build` to `workflow_dispatch` +
-a nightly `schedule`. The comment at the top of the `light-build` job says so.
+**Trigger decision: both jobs run on every PR and on pushes to `main` /
+`pixel*`.** The full QEMU cross-build turned out to be cheap on hosted
+`macos-14` runners: the whole 1056-step ninja build plus deps took about 7.5
+minutes with a cold sysroot cache. That's fast enough to gate every PR on the
+real build, so `full-build` isn't moved to main-only. If runner minutes ever
+become a problem, make `light-build` the PR gate and move `full-build` to
+`workflow_dispatch` plus a nightly `schedule` (the comment above the
+`light-build` job says the same). Timeouts are 45 min (full) and 30 min
+(light), several times the measured time.
+
+A clean CI build gives a ~11.8 MB `libqemu-system-aarch64.so` and a ~6.0 MB
+`app-debug.apk`. A local debug APK can be much bigger (10.6 MB on the dev Mac)
+with identical contents: AGP's incremental packaging leaves unused space in an
+APK it updates in place. Compare entries (`unzip -v`), not file sizes.
 
 ## 2. Why macOS, and why these choices
 
@@ -28,10 +38,11 @@ a nightly `schedule`. The comment at the top of the `light-build` job says so.
 * **`macos-14` (Apple-silicon) + Rosetta.** NDK r28 ships only a
   `darwin-x86_64` toolchain (`toolchains/llvm/prebuilt/darwin-x86_64`); the
   script picks it with `ls -d .../prebuilt/* | head -1`. On an arm64 runner
-  those clang binaries run under Rosetta 2, so the workflow installs it. If
-  Rosetta ever becomes unavailable or too slow, switch both jobs to `macos-13`
-  (Intel) and delete the Rosetta step — no other change needed. **Verify this
-  first**: it is the most likely thing to break on hosted runners.
+  those clang binaries run under Rosetta 2, so the workflow installs it
+  (verified working). If Rosetta ever becomes unavailable, switch both jobs to
+  `macos-13` (Intel) and delete the Rosetta step; no other change is needed.
+* **`setup-android` gets `packages: platform-tools`.** Its default also
+  requests the removed `tools` package, which makes sdkmanager exit 1.
 * **NDK pinned to `28.2.13676358`**, the exact version in `docs/HANDOFF.md`.
   Installed with `sdkmanager`, then `ANDROID_NDK_HOME` is exported so the build
   script does not have to guess from `~/Library/Android/sdk/ndk`.
@@ -114,13 +125,34 @@ Then `light-build` could run `native/build-android.sh deps` followed by
 a bad `-D` flag in seconds. Until that exists, `full-build` is the only QEMU
 check.
 
-## 6. Checklist before enabling
+## 6. Build-script bugs CI found (fixed in this PR)
 
-1. **Rosetta / runner arch.** Confirm the NDK `darwin-x86_64` clang runs on
-   `macos-14`. If not, switch to `macos-13`.
-2. **Full-build runtime vs. timeout.** `timeout-minutes: 150` is a guess. Run
-   it once via `workflow_dispatch`, read the real wall time, and tighten. The
-   QEMU link step is the long pole.
+The first hosted runs exposed two problems in `native/build-android.sh` that a
+dev Mac had hidden:
+
+* **Flaky GNU mirror, silently ignored.** `ftpmirror.gnu.org` redirected the
+  nettle download to a mirror with an expired TLS certificate. `fetch()` now
+  retries (`--retry 5 --retry-all-errors`), falls back to `ftp.gnu.org`, and
+  removes partial or mismatching files. Download and unpack failures are now
+  fatal: bash command substitutions don't inherit `set -e`, so
+  `s="$(unpack "$(fetch …)")"` had kept going until `./configure: No such
+  file or directory`.
+* **Host packages leaking into the cross-build.** libyuv (a CMake subproject)
+  found the runner's `/opt/homebrew/lib/libjpeg.a` and exported
+  `/opt/homebrew/include`, where Homebrew's nettle 4 headers shadowed our
+  nettle 3.10. `trng.c` then linked against `nettle_drbg_ctr_aes256_update`,
+  which 3.10 doesn't have. The cross file's `[cmake]` section now restricts
+  library, header and package searches to our sysroot and disables the JPEG
+  lookup. Any Mac with Homebrew libjpeg was getting the same leak; it only
+  broke where Homebrew nettle 4 was also installed.
+
+## 7. Checklist / maintenance
+
+1. **Rosetta / runner arch.** Verified on `macos-14`. If GitHub drops
+   Rosetta, switch to `macos-13`.
+2. **Runtime vs. timeout.** Measured ~7.5 min (full, cold) and ~5.5 min
+   (light) against timeouts of 45 and 30 min. Revisit if Gaia/rebases make
+   the build much bigger.
 3. **Action versions.** All six actions are pinned to real, long-published
    tags (all pre-2026, so comfortably older than two weeks):
    `actions/checkout@v4.2.2`, `actions/setup-java@v4.7.0`,
