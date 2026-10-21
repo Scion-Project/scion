@@ -7,9 +7,10 @@ import java.io.FileWriter
 import java.util.concurrent.TimeUnit
 
 /**
- * Software emulation: our Inferno build runs as a child process, its display
- * is QEMU's VNC server on a unix socket (read by [RfbClient]) and the buttons
- * go through the human monitor ([Monitor]).
+ * Software emulation: our Inferno build runs as a child process (or, with
+ * [VmSettings.inProcess], as a library in the :vm process, see
+ * [QemuInProcess]), its display is QEMU's VNC server on a unix socket (read
+ * by [RfbClient]) and the buttons go through the human monitor ([Monitor]).
  */
 class QemuBackend(ctx: Context) : VmBackend {
     private val app = ctx.applicationContext
@@ -17,12 +18,18 @@ class QemuBackend(ctx: Context) : VmBackend {
 
     override val kind = Backend.QEMU
 
+    private val inProcess get() = VmSettings.load(app).inProcess
+    private val libOk get() = paths.qemuLib.isFile && paths.qemuJni.isFile
+
     override fun checks(): List<VmBackend.Check> {
         val problems = VmLayout(paths.vmDir).problems()
         val qemuOk = paths.qemu.isFile
         return buildList {
             add(
-                if (qemuOk) VmBackend.Check(true, "QEMU binary bundled")
+                if (inProcess) {
+                    if (libOk) VmBackend.Check(true, "QEMU library bundled (in-process)")
+                    else VmBackend.Check(false, "QEMU library for in-process mode missing (run native/build-android.sh)")
+                } else if (qemuOk) VmBackend.Check(true, "QEMU binary bundled")
                 else VmBackend.Check(false, "QEMU binary missing (run native/build-android.sh)"),
             )
             if (problems.isEmpty()) add(VmBackend.Check(true, "VM folder looks complete"))
@@ -31,7 +38,8 @@ class QemuBackend(ctx: Context) : VmBackend {
     }
 
     override fun problems(): List<String> = VmLayout(paths.vmDir).problems() + listOfNotNull(
-        "QEMU binary not bundled in this build".takeIf { !paths.qemu.isFile },
+        if (inProcess) "QEMU library for in-process mode not bundled in this build".takeIf { !libOk }
+        else "QEMU binary not bundled in this build".takeIf { !paths.qemu.isFile },
     )
 
     override fun start(settings: VmSettings, log: (String) -> Unit): VmBackend.Instance? {
@@ -42,6 +50,17 @@ class QemuBackend(ctx: Context) : VmBackend {
 
         val cmd = QemuCommand.build(paths, vm, settings)
         log("$ " + cmd.joinToString(" "))
+
+        if (settings.inProcess) {
+            val env = buildMap {
+                put("TMPDIR", paths.tmpDir.absolutePath)
+                if (settings.vcpuAffinity.isNotBlank()) put("QEMU_VCPU_AFFINITY", settings.vcpuAffinity)
+            }
+            val vmProcess = QemuInProcess(app, paths, cmd, vm.dir.absolutePath, env)
+            if (vmProcess.bind()) return vmProcess
+            log("error: failed to start QEMU: cannot bind the :vm service")
+            return null
+        }
 
         val pb = ProcessBuilder(cmd).directory(vm.dir).redirectErrorStream(true)
         pb.environment()["TMPDIR"] = paths.tmpDir.absolutePath
