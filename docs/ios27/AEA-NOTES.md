@@ -26,13 +26,17 @@ neither provides nor looks up any key.
 
 ## 2. Which 27.0.1 components are `.aea`
 
-From [../IOS27.md](../IOS27.md) §1 and the `n104ap` erase identity of 27.0.1
-(`24A446`), cross-checked against 26.6.2 (`23G90`):
+From `tools/ipsw_probe.py` run on a local 27.0.1 (`24A446`) IPSW, `n104ap`
+erase/upgrade identities (manifest metadata only), plus [../IOS27.md](../IOS27.md)
+§1 for 26.6.2 (`23G90`):
 
-| Build-manifest component | `ipsw_probe` key | `.aea`? |
-|---|---|---|
-| `OS` (the root filesystem DMG) | `os_image` | **yes** — confirmed for both 26.6.2 and 27.0.1 |
-| `RestoreRamDisk` (erase / upgrade) | `restore_ramdisk_erase`, `restore_ramdisk_upgrade` | **OPEN** — probed as candidates; not confirmed `.aea` for 27.0.1 in IOS27.md |
+| Build-manifest component | `ipsw_probe` key | 27.0.1 path | `.aea`? |
+|---|---|---|---|
+| `OS` (the root filesystem DMG) | `os_image` | `043-70213-665.dmg.aea` | **yes** (also `.aea` on 26.6.2) |
+| `RestoreRamDisk` (erase) | `restore_ramdisk_erase` | `043-69915-784.dmg` | no, plain `.dmg` |
+| `RestoreRamDisk` (upgrade) | `restore_ramdisk_upgrade` | `043-69093-778.dmg` | no, plain `.dmg` |
+
+So on 27.0.1 the **OS image is the only AEA component**.
 
 `tools/ipsw_probe.py` already flags this: `MONITOR_COMPONENTS` aside, its
 `encrypted` check inspects `os_image`, `restore_ramdisk_erase` and
@@ -44,11 +48,9 @@ the upstream Inferno restore step produces the `root` disk from it, and that
 step is where the user decrypts the `.aea` on their Mac. SPTM/TXM (`sptm.*`,
 `txm.*`) are separate IM4P firmware images and are **not** `.aea`.
 
-> OPEN: the exact `.aea` filename (e.g. `NNN-NNNNN-NNN.dmg.aea`) and whether the
-> ramdisks are also `.aea` for 27.0.1. Resolve by reading the `OS` and
-> `RestoreRamDisk` `Info.Path` entries for the `n104ap` erase identity in that
-> build's `BuildManifest.plist` (metadata only — no payload bytes). This does
-> not block the detection code, which keys on magic/suffix, not on a name.
+The detection code doesn't depend on these names: it keys on the `.aea`
+suffix and the `AEA1` magic, so it also covers other builds where a different
+component turns out to be AEA.
 
 ## 3. What `package_vm.py` does about it
 
@@ -84,8 +86,8 @@ AEA_MAGIC = b"AEA1"  # Apple Encrypted Archive container magic (first 4 bytes)
 def reject_if_aea(path: Path, what: str):
     """Stop with guidance if `path` is still an Apple Encrypted Archive.
 
-    iOS 26/27 IPSWs ship the OS root filesystem (and maybe the restore
-    ramdisks) as .aea. This project ships no keys and never decrypts Apple
+    iOS 26/27 IPSWs ship the OS root filesystem DMG as .aea (on 27.0.1 the
+    restore ramdisks are plain .dmg). This project ships no keys and never decrypts Apple
     firmware for you: the upstream guide's restore step has you decrypt it
     yourself on the Mac with Apple's own `aea` tool. We only sniff the magic
     and refuse — we neither decrypt nor fetch anything.
@@ -132,13 +134,13 @@ Style matches the rest of the file: `sys.exit(...)` for user-facing errors,
 
 ## 5. OPEN / to resolve
 
-* **Exact `.aea` component names for 27.0.1** — §2 OPEN. Read the erase
-  identity's `OS`/`RestoreRamDisk` `Info.Path` in the manifest.
-* **Do the ramdisks need the same treatment at package time?** `package_vm.py`
-  consumes the already-built `root` disk and the SEP/kernel/dtb/trustcache, not
-  the ramdisks, so the `OS` image is the only `.aea` on its real path today.
-  The tree-wide `scan_for_aea` covers ramdisks defensively regardless. Confirm
-  once the guide's 26/27 flow is exercised end to end.
+* ~~Exact `.aea` component names for 27.0.1~~ — **resolved** (§2): only the
+  `OS` image (`043-70213-665.dmg.aea`) is AEA; both restore ramdisks are plain
+  `.dmg`.
+* **Other builds.** 26.6.2's ramdisk paths weren't re-checked here (IOS27.md
+  only records its OS image as `.aea`). The tree-wide `scan_for_aea` covers any
+  stray `.aea` regardless; re-run `ipsw_probe.py` on a build before relying on
+  the table above for it.
 * **Precise `aea decrypt` invocation** — intentionally not spelled out with a
   key argument, to avoid implying decryption is keyless. `man aea` plus the
   upstream guide is the correct pointer; refine the message only if upstream

@@ -52,8 +52,8 @@ def find_qemu_img(data: Path, explicit):
 def reject_if_aea(path: Path, what: str):
     """Stop with guidance if `path` is still an Apple Encrypted Archive.
 
-    iOS 26/27 IPSWs ship the OS root filesystem (and maybe the restore
-    ramdisks) as .aea. This project ships no keys and never decrypts Apple
+    iOS 26/27 IPSWs ship the OS root filesystem DMG as .aea (on 27.0.1 the
+    restore ramdisks are plain .dmg). This project ships no keys and never decrypts Apple
     firmware for you: the upstream guide's restore step has you decrypt it
     yourself on the Mac with Apple's own `aea` tool. We only sniff the magic
     and refuse — we neither decrypt nor fetch anything.
