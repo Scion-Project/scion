@@ -69,9 +69,9 @@ def reject_if_aea(path: Path, what: str):
         return
     sys.exit(
         f"{what} ({path.name}) is an Apple Encrypted Archive (.aea): still encrypted.\n"
-        f"Decrypt it yourself on this Mac first, then re-run — see `man aea` and the\n"
-        f"restore step of the upstream Inferno guide. This tool ships no keys and\n"
-        f"does not decrypt or download firmware."
+        f"Decrypt it yourself with macOS tools (Apple's `aea`; see `man aea`) by\n"
+        f"following the upstream Inferno guide's restore step, then rerun this tool.\n"
+        f"This tool ships no keys and does not decrypt or download firmware."
     )
 
 

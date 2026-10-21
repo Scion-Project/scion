@@ -45,29 +45,36 @@ a nightly `schedule`. The comment at the top of the `light-build` job says so.
 
 ## 3. Caching
 
-* **Dependency tarballs** (`native/build/dl`) are cached, keyed on the hash of
-  `build-android.sh` (the download URLs and sha256 sums live there, so a change
-  invalidates the cache). The script already skips re-downloading a present,
-  checksum-matching tarball, so this just avoids the network.
+Both native caches are keyed on `hashFiles('native/build-android.sh')` — the
+dep URLs, sha256 sums and build flags all live in that script, so any change to
+it invalidates both caches.
+
+* **Dependency tarballs** (`native/build/dl`): avoids re-downloading. The
+  script already skips a present, checksum-matching tarball.
+* **Static sysroot** (`native/build/sysroot`): the ~10 min saver. `full-build`
+  splits the native build into two steps — `native/build-android.sh deps`
+  (guarded by `if: steps.sysroot-cache.outputs.cache-hit != 'true'`) and
+  `native/build-android.sh qemu`. On a sysroot cache hit the deps step is
+  skipped and only QEMU is rebuilt. This is safe because the GitHub workspace
+  path is stable per repo, so the absolute paths baked into the generated
+  `*.pc` files stay valid across restores; the cross files and the
+  `pkg-config`/`host-cc` wrapper scripts are regenerated at the top of the
+  script on every run, so they are never stale. If a restored sysroot ever
+  looks wrong, bump the key (edit the script or add a suffix) to force a
+  rebuild.
 * **Gradle** caches (`~/.gradle` caches + wrapper dists) are handled by
   `gradle/actions/setup-gradle`.
-* **Optional, commented out: caching the built static sysroot**
-  (`native/build/sysroot`) to skip the ~10 min dep rebuild. It is safe only
-  because the GitHub workspace path is stable per repo, so the absolute paths
-  baked into the generated `*.pc` files and the `pkg-config`/`host-cc` wrapper
-  scripts remain valid across restores. It is left off because it is more
-  fragile than caching tarballs and because a stale sysroot is harder to
-  diagnose than a slow-but-correct rebuild. Enable it only if dep build time
-  becomes a real problem.
+* `light-build` caches the tarballs but **not** the sysroot — its whole point
+  is to rebuild the deps so the NDK/meson cross path is exercised every run.
 
 ## 4. Submodules
 
-`actions/checkout` is told `submodules: false`; `full-build` then runs
-`git submodule update --init --depth 1 third_party/inferno` and inits only the
-nested `util/mlib`, matching the script's comment that it initialises mlib but
-not QEMU's ROM submodules. `--depth 1` matches the `shallow = true` in
-`.gitmodules`. `light-build` skips the submodule entirely — `deps` only builds
-glib/pixman from tarballs.
+`actions/checkout` uses `submodules: true` (not `recursive`) in `full-build`:
+Inferno's `pixel-dev` has no nested git submodules, and its meson wraps (`dtc`,
+`mlib`, `libyuv`, `keycodemapdb`) are fetched during `meson setup`, so the QEMU
+build step needs network (default on hosted runners). `light-build` checks out
+with `submodules: false` — it only runs `deps`, which builds glib/pixman from
+tarballs and never touches the Inferno tree.
 
 ## 5. The light job's tradeoff (read this)
 
