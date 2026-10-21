@@ -11,6 +11,75 @@ build SPTM support ourselves. Meanwhile, this doc records what was measured.
 All inputs below were local research copies (kernelcaches range-fetched from
 three IPSWs into a scratch directory). Nothing Apple-owned is in the repo.
 
+## Progress (updated 2026-10-21)
+
+Despite the plan above, the boot chain is being brought up in the fork, one
+PR per step. Every step is opt-in: the iOS 27 path only runs with
+`-M t8030,sptm=…,txm=…` and an iOS 27 kernel. **iOS 14 boots take none of
+these paths.**
+
+| Step | Fork PR | State |
+|---|---|---|
+| GXF/SPTM system registers (GL1) | [Inferno#1](https://github.com/dylanneve1/Inferno/pull/1) | merged |
+| `sptm=` load path: SPTM runs and reaches its memory-map lookups (Milestone 0) | [Inferno#2](https://github.com/dylanneve1/Inferno/pull/2) | merged, measured (SPEC §2.6) |
+| `txm=` load and map | [Inferno#3](https://github.com/dylanneve1/Inferno/pull/3) | merged |
+| iOS 27 `/chosen` + `dart-sep` TXM properties | [Inferno#5](https://github.com/dylanneve1/Inferno/pull/5) | merged |
+| `a13-test` bench machine + register test in CI; **fix**: the #1 placeholders had replaced five A13 registers (MMU/FED error status, `S3_4_c15_c0_5`, `AMX_STATUS`, `AMX_CTL`) with plain storage on release builds | [Inferno#17](https://github.com/dylanneve1/Inferno/pull/17) | merged; app bumped in [#73](https://github.com/dylanneve1/ios-on-pixel/pull/73) |
+| iBoot-style image layout + `/chosen/memory-map` image regions, `cl4-entropy`, patch-check dry-run | [Inferno#18](https://github.com/dylanneve1/Inferno/pull/18) | merged; dry-run passes on the real images, **not yet run with a DT** |
+
+### What SPTM needs from the boot chain (static analysis of the 27.0.1 t8030 SPTM)
+
+Structural facts only, read from a local research copy:
+
+- **Image regions.** `init_get_image_region(name, required)` returns a 16-byte
+  `{paddr, length}` from `/chosen/memory-map`; any other size panics.
+  `validate_region_order()` walks a fixed table and requires each present
+  region to start exactly where the previous one ends:
+  `TXM-ro TXM-rx TXM-bx TrustCache [AuxKC-ro AuxKC-rx] BootKC-rx BootKC-bx
+  BootKC-ro BootKC-rs [CL4-rx CL4-ro] DeviceTree SPTM-ro SPTM-rx SPTM-rw`.
+  It also requires `TXM-rw/-le`, `BootKC-rw/-le`, `SPTM-rm/-le`, `BootArgs`,
+  `slide`, and `{TXM,BootKC,CL4}-{entry,virt}`. Entry points are computed
+  as `ptov(<image>-ro.paddr) + entry - virt` (CL4: `CL4-rx.paddr + entry - virt`).
+- **`BootKC-rs` belongs to SPTM.** `init_xnu_ro_data()` zeroes it and puts
+  XNU's read-only data (exception vector, CTRR dispatch table, RO page-table
+  bounds) in it, then checks those pointers fall in
+  `[BootKC-ro.paddr, BootKC-rs.end)`.
+- **Entropy.** `sptm_init()` copies `/chosen/random-seed` (1 to 0x100 bytes) and
+  `/chosen/cl4-entropy` into its own data and clears them. `cl4-entropy` must be
+  **exactly 0xc0 bytes**, or SPTM panics with "Not enough SK entropy".
+- **Free memory.** SPTM registers `[topOfKernelData, physBase + memSize)` from
+  the boot args as `AVAILABLE`, so every image and carve-out has to sit below
+  `topOfKernelData`. Optional regions (`RAMDisk`, `SEPFW`, `preoslog`,
+  `SPTMDebug`, …) are registered only if present.
+- **Exclaves.** The `CL4-*` lookups are unconditional, but SPTM only starts the
+  exclaves kernel ("Starting SK…") when `exclaves-enabled` is set. t8030
+  doesn't set it, so a one-page placeholder `CL4-rx` is enough.
+- **TXM** reads about a dozen `/chosen` properties (`debug-enabled`,
+  `chip-id`, `cs-system-policy`, `research-enabled`, `osenvironment`,
+  `/chosen/iBoot/iboot-build-variant`, …). Each missing one only gets a log
+  line and a default, not a panic. Its trust cache comes from
+  `memory-map/TrustCache`, as on XNU.
+
+### Checking a layout without a device tree
+
+```sh
+qemu-system-aarch64 -M t8030,patch-check=on,sptm=<sptm.im4p>,txm=<txm.im4p> \
+    -kernel <kernelcache> -display none -m 1G
+```
+
+This lays the three images out, publishes the regions into a scratch
+memory-map and re-runs SPTM's checks. On the 27.0.1 research kernelcache it
+reports `the image regions pass SPTM's checks`.
+
+### Blocked / next
+
+- **A real SPTM run against the new layout** needs the 27.0.1
+  `DeviceTree.n104ap` and restore trust cache on the build host. The owner
+  provides them. Expected next stop: whatever comes after `sptm_init()`'s
+  region setup (PAPT registration, then "Starting TXM...").
+- After that: the TXM boot-arg struct (SPEC OPEN-2), then SPTM's hand-off to
+  the kernel trampoline (`x0` ∈ {4, 5}).
+
 ## 1. Manifests: SPTM/TXM is new in 27
 
 Comparing the `n104ap` erase identities of 26.6.2 (`23G90`) and 27.0.1 (`24A446`):
