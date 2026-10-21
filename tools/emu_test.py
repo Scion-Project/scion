@@ -209,8 +209,9 @@ def cmd_app_smoke(a):
     (out / "qemu-machines.txt").write_text(machines.stdout + machines.stderr)
     check(re.search(r"^t8030\b", machines.stdout, re.M) is not None, "bundled QEMU lists the t8030 machine")
     if machines.returncode != 0:
-        # Not fatal here: seen as a bionic FORTIFY abort on exit (destroyed mutex) after the list printed.
-        print(f"WARN: `-M help` exited with status {machines.returncode} after listing machines; see qemu-machines.txt")
+        # Not fatal here: an intermittent bionic FORTIFY abort on exit (destroyed mutex), issue #61.
+        print(f"WARN: `-M help` exited with status {machines.returncode} after listing machines "
+              "(known exit abort, #61); see qemu-machines.txt")
 
     shot = subprocess.run(["adb"] + (["-s", a.serial] if a.serial else []) + ["exec-out", "screencap", "-p"],
                           capture_output=True)

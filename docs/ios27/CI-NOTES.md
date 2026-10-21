@@ -7,13 +7,13 @@ runners (first green run: 39602151945).
 
 ## 1. Summary
 
-Four jobs. The three builds run on `macos-14`, the emulator test on `ubuntu-24.04`:
+Four jobs. Only `full-build` uses a macOS runner (`macos-14`); the rest run on `ubuntu-24.04`:
 
 | Job | What it builds | Rough cost | Purpose |
 |---|---|---|---|
 | `full-build` | static deps + full QEMU cross-build + `assembleDebug` | ~7.5 min cold (measured) | the real `app-debug.apk` artifact |
-| `light-build` | static deps + stub `.so` + `lint`/`assembleDebug` | ~5.5 min (measured) | fast gate; still exercises NDK/meson + the whole AGP build |
-| `baseline-build` | same as `full-build`, with `TUNE_CFLAGS=-march=armv8-a` | ~4.5 min cold (measured) | the APK `emulator-smoke` tests (§8) |
+| `light-build` | static deps + stub `.so` + `lint`/`assembleDebug` (Linux) | ~5.7 min (measured) | fast gate; still exercises NDK/meson + the whole AGP build |
+| `baseline-build` | same as `full-build`, with `TUNE_CFLAGS=-march=armv8-a` (Linux) | ~9 min cold (measured) | the APK `emulator-smoke` tests (§8) |
 | `emulator-smoke` | nothing; installs and runs `baseline-build`'s APK on an emulator | ~2 min (measured) | app launches, main screen renders, bundled QEMU runs in the app sandbox and lists `t8030` (§8) |
 
 **Trigger decision: both jobs run on every PR and on pushes to `main` /
@@ -31,17 +31,26 @@ A clean CI build gives a ~11.8 MB `libqemu-system-aarch64.so` and a ~6.0 MB
 with identical contents: AGP's incremental packaging leaves unused space in an
 APK it updates in place. Compare entries (`unzip -v`), not file sizes.
 
-## 2. Why macOS, and why these choices
+## 2. Runners, and why these choices
 
-* **macOS is mandatory.** `native/build-android.sh` is written for a Mac host:
-  the `pick_host_cc` probe uses `xcode-select -p` / `DEVELOPER_DIR`, checksums
-  use `shasum`, and job counts use `sysctl -n hw.logicalcpu`. A Linux runner
-  would need the script generalised first.
+* **macOS for `full-build` only.** `native/build-android.sh` runs unchanged on
+  both hosts: the NDK prebuilt dir is globbed (`darwin-x86_64` or
+  `linux-x86_64`), the `pick_host_cc` probe's first candidate is plain
+  `/usr/bin/cc`, `shasum` exists on Ubuntu, and `JOBS` falls back to `nproc`.
+  `full-build` stays on macOS because it produces the shipped APK and should
+  match how a dev Mac builds it. `baseline-build` and `light-build` run on
+  `ubuntu-24.04` to free macOS slots (verified green, PR #59). The 4-vCPU
+  Linux runner is slower: `baseline-build` takes ~9 min cold there vs ~4.5 min
+  on `macos-14`.
+* **Linux host tools.** `ninja-build` and `pkgconf` from apt, CMake from the
+  runner image, and meson from PyPI pinned to **1.12.0** (the version
+  Homebrew gives the macOS jobs). Ubuntu's apt meson is too old for glib 2.88.
+  Bump the pin together with Homebrew's meson if the macOS side moves.
 * **`macos-14` (Apple-silicon) + Rosetta.** NDK r28 ships only a
   `darwin-x86_64` toolchain (`toolchains/llvm/prebuilt/darwin-x86_64`); the
   script picks it with `ls -d .../prebuilt/* | head -1`. On an arm64 runner
   those clang binaries run under Rosetta 2, so the workflow installs it
-  (verified working). If Rosetta ever becomes unavailable, switch both jobs to
+  (verified working). If Rosetta ever becomes unavailable, switch `full-build` to
   `macos-13` (Intel) and delete the Rosetta step; no other change is needed.
 * **`setup-android` gets `packages: platform-tools`.** Its default also
   requests the removed `tools` package, which makes sdkmanager exit 1.
@@ -53,7 +62,7 @@ APK it updates in place. Compare entries (`unzip -v`), not file sizes.
   compiled bytecode — that is unrelated to the JDK that runs Gradle.
 * **compileSdk 36 / build-tools 36.0.0** installed explicitly so AGP never has
   to auto-download an SDK component mid-build.
-* **Homebrew** supplies `meson ninja pkgconf cmake` (the script requires
+* **Homebrew** (macOS job) supplies `meson ninja pkgconf cmake` (the script requires
   `meson ninja pkg-config cmake`; `pkgconf` provides the `pkg-config` shim).
 
 ## 3. Caching
@@ -200,7 +209,7 @@ translator itself (`SI_TKILL` from translated code) on a guest instruction it
 doesn't implement. So `baseline-build` builds the same sources for plain
 `armv8-a`, with its own sysroot cache because the tuning flags also apply to
 the deps, and `emulator-smoke` tests that APK. `full-build` and the shipped
-`app-debug-apk` stay Tensor-tuned. The cost is one more macOS build per PR,
+`app-debug-apk` stay Tensor-tuned. The cost is one more build per PR (a Linux runner since PR #59),
 which is free for this public repo.
 
 **What covers the Tensor-tuned binary instead.** The emulator never executes
@@ -210,14 +219,15 @@ master build of the Tensor-tuned binary was run on the Pixel 10 with
 baseline. Re-run that on the phone after changing `TUNE_CFLAGS`, the
 compiler or the NDK, since CI can't catch an ISA problem there.
 
-**Known issue it surfaced.** On the green run (39612534904), `-M help`
-printed the machine list and then aborted on exit:
+**Known issue it surfaced (intermittent).** On run 39612534904, `-M help`
+printed the machine list and then aborted on exit (the next run, 39620826151,
+exited cleanly):
 `FORTIFY: pthread_mutex_lock called on a destroyed mutex`, `SIGABRT` in a
 non-main QEMU thread. That looks like an exit-time race (a background thread,
 probably RCU, locks a mutex teardown already destroyed) which glibc ignores
 and bionic's FORTIFY turns into an abort, so it's likely on real phones too.
 `app-smoke` reports it as a `WARN` rather than failing, because it's a
-separate bug; it needs its own issue.
+separate bug, tracked as #61.
 
 **Limits.** This is a launch and packaging test, not a boot test. It needs no
 Apple files and never starts a VM; `docs/PHONE-SMOKE.md` and
