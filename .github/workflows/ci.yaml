@@ -1,22 +1,26 @@
 # GitHub Actions CI for ios-on-pixel.
 #
 # What it does on every push / PR:
-#   * full-build : cross-compiles the static deps + the Inferno QEMU fork with
-#                  NDK r28 (native/build-android.sh), then ./gradlew assembleDebug,
-#                  and uploads app-debug.apk. This is the real artifact.
-#   * light-build: cheap gate — builds only the static deps (exercises the NDK +
-#                  meson cross path via glib/pixman), drops a stub libqemu .so,
-#                  and runs gradle lint + assembleDebug so the Kotlin/AGP side is
-#                  always checked even when the heavy QEMU compile is skipped.
+#   * full-build    : (macOS) cross-compiles the static deps + the Inferno QEMU
+#                     fork with NDK r28 (native/build-android.sh), Tensor-tuned,
+#                     then ./gradlew assembleDebug; uploads app-debug.apk, the
+#                     real artifact.
+#   * baseline-build: (Linux) the same build for plain armv8-a; its APK is only
+#                     for emulator-smoke.
+#   * light-build   : (Linux) cheap gate: static deps only, a stub libqemu .so,
+#                     then gradle lint + assembleDebug.
+#   * emulator-smoke: (Linux) installs baseline-build's APK on an x86_64 Android
+#                     emulator, checks the UI and runs QEMU in the app sandbox.
 #
 # The APK only ever contains our own code plus GPL/AGPL QEMU, so publishing it as
 # a build artifact is fine (see docs/ETHICS.md). It ships no Apple files.
 #
-# Runner: macOS is REQUIRED. native/build-android.sh is macOS-specific (host-cc
-# probe via xcode-select/DEVELOPER_DIR, `shasum`, `sysctl -n hw.logicalcpu`).
-# We use macos-14 (Apple-silicon). NDK r28 ships only a darwin-x86_64 toolchain,
-# which runs under Rosetta 2 on arm64 runners (installed below). If that ever
-# breaks, switch to an Intel image (macos-13) and drop the Rosetta step.
+# Runners: build-android.sh works on both macOS and Linux hosts (the NDK
+# prebuilt dir is globbed; the host-cc probe falls back to plain cc). Only
+# full-build stays on macOS (macos-14), so the shipped artifact is built the
+# same way as on a dev Mac; everything else runs on Ubuntu, freeing macOS
+# slots. On macos-14 the NDK's darwin-x86_64 toolchain runs under Rosetta 2
+# (installed below); if that ever breaks, use an Intel image (macos-13).
 #
 # See docs/ios27/CI-NOTES.md for choices, measured timings and maintenance.
 # Action versions are pinned to real, long-published tags (consider re-pinning
@@ -154,6 +158,121 @@ jobs:
           retention-days: 14
 
   # ---------------------------------------------------------------------------
+  # Baseline-ISA build for the emulator smoke test. CI emulators are x86_64
+  # images whose ARM translation can't execute the Tensor-tuned binary
+  # (-march=armv8.2-a+crypto+dotprod+rcpc -> SIGILL under translation), so
+  # this job builds the same code for plain armv8-a. Only emulator-smoke uses
+  # its APK; the shipped artifact is full-build's Tensor-tuned APK.
+  # ---------------------------------------------------------------------------
+  baseline-build:
+    # Linux: NDK linux-x86_64 toolchain, frees macOS slots for full-build.
+    runs-on: ubuntu-24.04
+    env:
+      # build-android.sh applies this to the deps and to QEMU.
+      TUNE_CFLAGS: "-march=armv8-a"
+    # Measured ~7.5 min cold (deps + 1056-step QEMU build + gradle); ample headroom.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout (with the Inferno submodule)
+        uses: actions/checkout@v4.2.2
+        with:
+          # `true`, not `recursive`: Inferno's pixel-dev has no nested
+          # submodules. Its meson wraps (dtc, mlib, libyuv, keycodemapdb) are
+          # fetched during `meson setup`, so the QEMU build step needs network.
+          submodules: true
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4.7.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3.2.2
+        with:
+          # The default ("tools platform-tools") asks for the obsolete `tools`
+          # package, which sdkmanager no longer has (exit 1). Install only
+          # platform-tools here; the next step installs the exact NDK/SDK bits.
+          packages: platform-tools
+
+      - name: Install NDK r28 + platform + build-tools
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            "ndk;${ANDROID_NDK_VERSION}" \
+            "$ANDROID_PLATFORM" \
+            "$ANDROID_BUILD_TOOLS" \
+            "platform-tools"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+
+      # Same tool versions as the macOS jobs: meson from PyPI (Ubuntu's apt
+      # meson is too old for glib 2.88), ninja/pkgconf from apt, and the
+      # runner's preinstalled CMake.
+      - name: Install host build tools (apt + pipx)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build pkgconf
+          pipx install meson==1.12.0
+          meson --version; ninja --version; cmake --version | head -1
+
+      - name: Point Gradle at the SDK
+        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+
+      # Both caches are keyed on the hash of build-android.sh: the dep URLs,
+      # sha256 sums and build flags all live there, so any change invalidates
+      # them.
+      - name: Cache dependency tarballs
+        uses: actions/cache@v4.2.0
+        with:
+          path: native/build/dl
+          key: deps-dl-${{ runner.os }}-${{ hashFiles('native/build-android.sh') }}
+
+      # Cache the built static libs. This is the ~10 min saver: on a hit the
+      # deps step below is skipped and only QEMU is rebuilt. Safe because the
+      # GitHub workspace path is stable per repo, so the absolute paths baked
+      # into the generated *.pc files stay valid across restores (the cross
+      # files and pkg-config/host-cc wrappers are regenerated on every run).
+      - name: Cache static sysroot
+        id: sysroot-cache
+        uses: actions/cache@v4.2.0
+        with:
+          path: native/build/sysroot
+          key: deps-sysroot-baseline-${{ runner.os }}-${{ hashFiles('native/build-android.sh') }}
+
+      # Sets up Gradle and caches ~/.gradle (caches + wrapper dists) automatically.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4.2.2
+
+      - name: Build static deps (skipped on sysroot cache hit)
+        if: steps.sysroot-cache.outputs.cache-hit != 'true'
+        run: native/build-android.sh deps
+
+      - name: Build QEMU (cross-build)
+        run: native/build-android.sh qemu
+
+      - name: Assemble debug APK
+        run: ./gradlew --no-daemon assembleDebug
+
+      # Fail loudly before the upload if either expected output is missing.
+      # Clean CI build: .so ~11.8 MB, APK ~6.0 MB (incremental local APKs are
+      # larger with the same contents; see docs/ios27/CI-NOTES.md).
+      - name: Verify build outputs exist
+        run: |
+          so=app/src/main/jniLibs/arm64-v8a/libqemu-system-aarch64.so
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          test -f "$so"  || { echo "missing native library: $so"; exit 1; }
+          test -f "$apk" || { echo "missing APK: $apk"; exit 1; }
+          ls -lh "$so" "$apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4.6.0
+        with:
+          name: app-debug-apk-baseline
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
   # Lightweight fallback. Fast PR gate that still touches the NDK/meson path and
   # the whole Kotlin/AGP build, without the multi-hour QEMU cross-compile.
   #
@@ -168,7 +287,8 @@ jobs:
   # full-build to `workflow_dispatch` + a nightly `schedule`.
   # ---------------------------------------------------------------------------
   light-build:
-    runs-on: macos-14
+    # Linux: NDK linux-x86_64 toolchain, frees macOS slots for full-build.
+    runs-on: ubuntu-24.04
     # Measured ~5.5 min.
     timeout-minutes: 30
     steps:
@@ -204,11 +324,15 @@ jobs:
             "platform-tools"
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
 
-      - name: Ensure Rosetta 2 (NDK toolchain is darwin-x86_64)
-        run: softwareupdate --install-rosetta --agree-to-license || true
-
-      - name: Install host build tools (Homebrew)
-        run: brew install meson ninja pkgconf cmake
+      # Same tool versions as the macOS jobs: meson from PyPI (Ubuntu's apt
+      # meson is too old for glib 2.88), ninja/pkgconf from apt, and the
+      # runner's preinstalled CMake.
+      - name: Install host build tools (apt + pipx)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build pkgconf
+          pipx install meson==1.12.0
+          meson --version; ninja --version; cmake --version | head -1
 
       - name: Point Gradle at the SDK
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
@@ -246,3 +370,55 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # App smoke test on an Android emulator (issue #26). Installs the APK that
+  # full-build produced, launches MainActivity, checks that the main screen and
+  # its checks list render, and runs the bundled QEMU inside the app sandbox
+  # (`run-as`, from nativeLibraryDir, as the app does): `--version` and
+  # `-M help` must list t8030. No Apple files are involved.
+  #
+  # Runner: the APK and QEMU are arm64-only, but hosted Apple-silicon macOS
+  # runners can't nest virtualization, so there's no arm64 emulator there.
+  # Ubuntu runners have KVM, and x86_64 Google APIs images (API 30+) run arm64
+  # apps through Android's built-in ARM translation. See CI-NOTES.md.
+  # ---------------------------------------------------------------------------
+  emulator-smoke:
+    needs: baseline-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout (for tools/emu_test.py)
+        uses: actions/checkout@v4.2.2
+
+      - name: Download the baseline-ISA APK
+        uses: actions/download-artifact@v4.1.8
+        with:
+          name: app-debug-apk-baseline
+          path: apk
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Boot emulator and run the app smoke test
+        uses: reactivecircus/android-emulator-runner@v2.33.0
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: python3 tools/emu_test.py app-smoke apk/app-debug.apk --out smoke
+
+      - name: Upload smoke-test evidence (UI dump, screenshot, logcat, QEMU output)
+        if: always()
+        uses: actions/upload-artifact@v4.6.0
+        with:
+          name: emulator-smoke
+          path: smoke
+          if-no-files-found: warn
+          retention-days: 14
