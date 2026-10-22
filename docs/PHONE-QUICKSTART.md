@@ -130,6 +130,10 @@ For example, use USB file transfer into `Download/phone-vm`. Then, in the app:
    (**Cancel import**, or the notification). It ends with `Imported N files (X GiB)`.
 4. Delete the copy in `Download` afterwards to get the space back.
 
+That's the first install's folder. The app can hold several installs, for
+example the QEMU iOS 14 VM and an AVF one, each with its own folder, engine and
+settings: see [Several installs](#several-installs).
+
 Either way, the checklist should now read `✓ VM folder looks complete`. If not,
 it names what's wrong:
 * a missing file or `vm.properties` key;
@@ -222,14 +226,36 @@ With adb you can also read the log directly:
   no display. See [AVF backend](#avf-backend-experimental) below and
   [scion-avf](https://github.com/dylanneve1/scion-avf).
 
+## Several installs
+
+The **Installs** card at the top of the main screen lists the VMs the app
+knows about. Each install has its own VM folder, engine (QEMU or AVF) and
+settings, plus its own sockets and logs. Only one runs at a time, so switching
+is disabled while a VM runs.
+
+* **Upgrading from a single-VM build:** on first launch the existing VM becomes
+  install 1, "iOS 14 (iPhone 11)", with its settings. Its folder stays exactly
+  where it was (`files/vm`, or `Android/data/…/files/vm` in shared storage);
+  nothing in it is moved, copied or rewritten. The old settings stay too, kept
+  in step with install 1, so an older build still finds the same VM.
+* **Add** makes a new install with an empty folder,
+  `/data/user/0/io.github.dylanneve1.iosonpixel/files/installs/<id>`. Fill it
+  with **Import VM folder…**, or `adb push` to its shared folder (shown under
+  VM files) and move it in. Import and move always act on the selected install.
+* **Remove** only forgets the install. Its files are deleted only if you tick
+  **Also delete its files**. That box is only offered for folders the app
+  created for that install (`installs/<id>`), never for install 1's `files/vm`.
+* Logs: `Android/data/io.github.dylanneve1.iosonpixel/files/logs/<id>/`
+  (`qemu.log`, `avf-console.log`). The debug bundle covers the selected install.
+
 ## AVF backend (experimental)
 
-**Settings → Advanced → VM backend → AVF** runs the guest as a non-protected
+**Settings → Advanced → VM backend → AVF** (per install) runs the guest as a non-protected
 custom-kernel VM under the Android Virtualization Framework (pKVM + crosvm)
 instead of QEMU. Today that means a Linux-style kernel + initrd with a
 console only: the iOS kernel for AVF is still being ported, and there's no
 display yet. The guest console shows in the app's output view and in
-`Android/data/io.github.dylanneve1.iosonpixel/files/avf-console.log`.
+`Android/data/io.github.dylanneve1.iosonpixel/files/logs/<install id>/avf-console.log`.
 
 **One-time adb setup.** The main screen lists whatever is missing, with these
 commands:

@@ -3,7 +3,6 @@ package io.github.dylanneve1.iosonpixel
 import android.content.Context
 import android.view.MotionEvent
 import android.view.Surface
-import java.io.File
 
 /**
  * The engine that runs the guest. VmService, MainActivity and DisplayActivity
@@ -59,13 +58,13 @@ interface VmBackend {
     data class Check(val ok: Boolean, val text: String)
 
     companion object {
-        /** [vmDir] overrides the VM folder in use (the debug-build developer hook). */
-        fun create(ctx: Context, kind: Backend, vmDir: File? = null): VmBackend = when (kind) {
-            Backend.QEMU -> QemuBackend(ctx, vmDir)
-            Backend.AVF -> AvfBackend(ctx, vmDir)
+        fun create(ctx: Context, install: Install): VmBackend = when (install.backend) {
+            Backend.QEMU -> QemuBackend(ctx, install)
+            Backend.AVF -> AvfBackend(ctx, install)
         }
 
-        fun current(ctx: Context): VmBackend = create(ctx, VmSettings.load(ctx).backend)
+        /** The running VM's backend if there is one, else the selected install's. */
+        fun current(ctx: Context): VmBackend = VmService.runningBackend ?: create(ctx, Installs.current(ctx))
     }
 }
 

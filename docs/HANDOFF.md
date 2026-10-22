@@ -122,8 +122,15 @@ needed three more things beyond the above:
 
 ## Architecture recap
 
+* **Installs:** the app holds a list of VMs (`Installs.kt`). Each `Install`
+  has an id, a name, its folder (internal and shared paths plus which is in
+  use) and its own `VmSettings`, backend included. `AppPaths(ctx, installId)`
+  gives each install its own sockets (`files/run/<id>/`) and logs
+  (`<external>/logs/<id>/`). The single-VM layout migrates into install 1 in
+  place (`InstallMigration`, unit-tested), and its settings and location are
+  mirrored to the old `vm_settings` and `vm_paths` prefs for downgrades.
 * **Backends:** the VM engine sits behind `VmBackend` (start/stop, readiness
-  checks, display, buttons), chosen by `VmSettings.backend`. `QemuBackend`
+  checks, display, buttons), chosen per install by `VmSettings.backend`. `QemuBackend`
   emulates the iPhone; `AvfBackend` boots a custom kernel under AVF (pKVM)
   from `avf.properties` in the VM folder, through the reflection layer in
   `avf/AvfApi.kt` (ported from the scion-avf probe). It's headless

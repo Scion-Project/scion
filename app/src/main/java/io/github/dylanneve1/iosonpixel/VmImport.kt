@@ -57,12 +57,12 @@ object ImportState {
 
 /**
  * Copies a VM folder picked with the Storage Access Framework (the output
- * of tools/package_vm.py) into [AppPaths.vmDir], as an alternative to
+ * of tools/package_vm.py) into an install's folder ([Install.dir]), as an alternative to
  * `adb push`. A foreground service so a multi-GB copy survives the user
  * leaving the app.
  *
- * Files are streamed, never held in memory. The old vm.properties is removed
- * first and the new one is written last, so a cancelled or failed import
+ * Files are streamed, never held in memory. The old manifest ([Install.manifest]:
+ * vm.properties, or avf.properties for AVF) is removed first and the new one is written last, so a cancelled or failed import
  * shows up as an incomplete folder in the checks instead of a mixed VM.
  *
  * The same service moves the VM between shared storage and internal app
@@ -76,11 +76,21 @@ class ImportService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_CANCEL -> if (worker != null) ImportState.cancelled = true else stopSelf()
-            ACTION_MOVE -> start(move = true) { moveVm(intent.getBooleanExtra(EXTRA_TO_INTERNAL, true)) }
-            else -> intent?.data?.let { tree -> start(move = false) { copyTree(tree) } }
+            ACTION_MOVE -> {
+                val i = install(intent)
+                start(move = true) {
+                    i?.let { moveVm(it, intent.getBooleanExtra(EXTRA_TO_INTERNAL, true)) } ?: "Move failed: that install no longer exists"
+                }
+            }
+            else -> intent?.data?.let { tree ->
+                val i = install(intent)
+                start(move = false) { i?.let { copyTree(it, tree) } ?: "Import failed: that install no longer exists" }
+            }
         }
         return START_NOT_STICKY
     }
+
+    private fun install(intent: Intent): Install? = intent.getStringExtra(EXTRA_INSTALL)?.let { Installs.get(this, it) }
 
     /** Runs [job] (which returns the final status line) on a worker thread, in the foreground. */
     private fun start(move: Boolean, job: () -> String) {
@@ -114,11 +124,13 @@ class ImportService : Service() {
     private data class Entry(val name: String, val uri: Uri, val size: Long)
 
     /** Returns the final status line. */
-    private fun copyTree(tree: Uri): String {
-        val dest = AppPaths(this).vmDir.apply { mkdirs() }
+    private fun copyTree(install: Install, tree: Uri): String {
+        val dest = install.dir.apply { mkdirs() }
+        val manifest = install.manifest
         val entries = list(tree)
-        if (entries.none { it.name == VmLayout.MANIFEST }) {
-            return "Import failed: no ${VmLayout.MANIFEST} in that folder (pick the one package_vm.py wrote)"
+        if (entries.none { it.name == manifest }) {
+            return "Import failed: no $manifest in that folder" +
+                if (install.backend == Backend.QEMU) " (pick the one package_vm.py wrote)" else ""
         }
 
         // Each file replaces one of the same name, so only growth needs free space.
@@ -129,10 +141,10 @@ class ImportService : Service() {
             return "Import failed: needs ${gib(needed)} free, ${gib(free)} available"
         }
 
-        File(dest, VmLayout.MANIFEST).delete()
+        File(dest, manifest).delete()
         val copy = Copier("Import", total)
-        // vm.properties last: it is what makes the folder look complete.
-        for (e in entries.sortedBy { it.name == VmLayout.MANIFEST }) {
+        // The manifest last: it is what makes the folder look complete.
+        for (e in entries.sortedBy { it.name == manifest }) {
             try {
                 copy.file(e.name, File(dest, e.name)) {
                     contentResolver.openInputStream(e.uri) ?: throw IOException("cannot open ${e.name}")
@@ -141,7 +153,7 @@ class ImportService : Service() {
                 return "Import cancelled; the VM folder stays incomplete until a full import"
             }
         }
-        return "Imported ${entries.size} files (${gib(copy.copied)})"
+        return "Imported ${entries.size} files (${gib(copy.copied)}) into ${install.name}"
     }
 
     /**
@@ -151,17 +163,17 @@ class ImportService : Service() {
      *
      * Ordering, so an interrupted move never leaves two half folders:
      * 1. the destination is cleared and filled, vm.properties last;
-     * 2. commit: [AppPaths.setVmInternal] switches the active location;
+     * 2. commit: [Installs.setInternal] switches the active location;
      * 3. only then is the source deleted, vm.properties first.
      * Before 2, the source is untouched and still in use, and a cancelled or
      * failed copy deletes what it wrote. After 2, the destination is complete.
      */
-    private fun moveVm(toInternal: Boolean): String {
-        val paths = AppPaths(this)
-        val src = if (toInternal) paths.sharedVmDir else paths.internalVmDir
-        val dest = (if (toInternal) paths.internalVmDir else paths.sharedVmDir).apply { mkdirs() }
+    private fun moveVm(install: Install, toInternal: Boolean): String {
+        val src = File(if (toInternal) install.sharedDir else install.internalDir)
+        val dest = File(if (toInternal) install.internalDir else install.sharedDir).apply { mkdirs() }
         val where = if (toInternal) "internal storage" else "shared storage"
-        if (!File(src, VmLayout.MANIFEST).isFile) return "Move failed: no ${VmLayout.MANIFEST} in ${src.path}"
+        val manifest = install.manifest
+        if (!File(src, manifest).isFile) return "Move failed: no $manifest in ${src.path}"
         val files = src.listFiles { f -> f.isFile && !f.name.startsWith(".") }.orEmpty().toList()
 
         // The destination's old files go first, so they count as free space.
@@ -174,25 +186,25 @@ class ImportService : Service() {
 
         // Replacing the VM in use (a fresh adb push to shared storage while the VM is
         // internal): the source is complete, so make it the active one first.
-        if (paths.vmInternal == toInternal) AppPaths.setVmInternal(this, !toInternal)
+        if (install.internal == toInternal) Installs.setInternal(this, install.id, !toInternal)
         fun clearDest() {
-            File(dest, VmLayout.MANIFEST).delete()
+            File(dest, manifest).delete()
             dest.listFiles { f -> f.isFile }?.forEach { it.delete() }
         }
         clearDest()
         val copy = Copier("Move to $where", files.sumOf { it.length() })
         try {
-            for (f in files.sortedBy { it.name == VmLayout.MANIFEST }) {
+            for (f in files.sortedBy { it.name == manifest }) {
                 copy.file(f.name, File(dest, f.name)) { f.inputStream() }
             }
-            AppPaths.setVmInternal(this, toInternal)
+            Installs.setInternal(this, install.id, toInternal)
         } catch (x: Throwable) {
             clearDest()
             if (x is CancelledException) return "Move cancelled; the VM stays in ${src.path}"
             throw x
         }
 
-        File(src, VmLayout.MANIFEST).delete()
+        File(src, manifest).delete()
         files.forEach { it.delete() }
         return "Moved ${files.size} files (${gib(copy.copied)}) to $where"
     }
@@ -318,20 +330,23 @@ class ImportService : Service() {
         private const val ACTION_CANCEL = "cancel"
         private const val ACTION_MOVE = "move"
         private const val EXTRA_TO_INTERNAL = "to_internal"
+        private const val EXTRA_INSTALL = "install"
         private const val REPORT_MS = 250L
         /** Headroom left on the device after the import. */
         private const val SPARE_BYTES = 256L shl 20
 
         fun gib(bytes: Long) = "%.2f GiB".format(bytes / (1L shl 30).toDouble())
 
-        fun start(ctx: Context, tree: Uri) {
-            ctx.startForegroundService(Intent(ctx, ImportService::class.java).setData(tree))
+        /** Imports the folder [tree] into [install]'s folder. */
+        fun start(ctx: Context, install: Install, tree: Uri) {
+            ctx.startForegroundService(Intent(ctx, ImportService::class.java).setData(tree).putExtra(EXTRA_INSTALL, install.id))
         }
 
-        /** Moves the VM to internal app storage, or back to shared storage. */
-        fun move(ctx: Context, toInternal: Boolean) {
+        /** Moves [install]'s folder to internal app storage, or back to shared storage. */
+        fun move(ctx: Context, install: Install, toInternal: Boolean) {
             ctx.startForegroundService(
-                Intent(ctx, ImportService::class.java).setAction(ACTION_MOVE).putExtra(EXTRA_TO_INTERNAL, toInternal),
+                Intent(ctx, ImportService::class.java).setAction(ACTION_MOVE)
+                    .putExtra(EXTRA_TO_INTERNAL, toInternal).putExtra(EXTRA_INSTALL, install.id),
             )
         }
 

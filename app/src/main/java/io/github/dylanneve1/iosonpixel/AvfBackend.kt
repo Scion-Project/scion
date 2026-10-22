@@ -23,18 +23,15 @@ import java.util.concurrent.atomic.AtomicBoolean
  * to avf-console.log; its display and input go through [io] (headless for now, see [AvfIo]).
  *
  * Needs a one-time adb setup, which [AvfSupport.checks] spells out when something is missing.
- *
- * [vmDir] overrides the VM folder (the debug-build developer hook, see MainActivity).
  */
 class AvfBackend(
     ctx: Context,
-    private val vmDir: File? = null,
+    private val install: Install,
     private val io: AvfIo = AvfIo.None,
 ) : VmBackend {
     private val app = ctx.applicationContext
-    private val paths = AppPaths(app)
-    /** Read on each use: a move to internal storage changes [AppPaths.vmDir]. */
-    private val dir get() = vmDir ?: paths.vmDir
+    private val paths = AppPaths(app, install.id)
+    private val dir get() = install.dir
 
     override val kind = Backend.AVF
 
@@ -45,6 +42,7 @@ class AvfBackend(
     override fun problems(): List<String> = checks().filter { !it.ok }.map { it.text }
 
     override fun start(settings: VmSettings, log: (String) -> Unit): VmBackend.Instance? {
+        paths.prepare()
         val spec = AvfLayout(dir).spec(settings)
         log("$ avf " + describe(spec))
         return AvfVm.start(app, spec, io, paths.avfLogFile, log)
@@ -207,8 +205,9 @@ class AvfLayout(val dir: File) {
         name = AvfVm.NAME,
         kernel = kernel!!.absolutePath,
         initrd = initrd?.absolutePath,
-        // The setting wins over any security= in the folder's params.
-        params = params.filter { !it.startsWith("${Security.BOOT_ARG}=") } + s.security.bootArg,
+        // The Extra arguments setting comes after the folder's params; the Security setting wins
+        // over any security= in either.
+        params = (params + s.extraArgList).filter { !it.startsWith("${Security.BOOT_ARG}=") } + s.security.bootArg,
         disks = disks.map { AvfApi.Disk(it.file.absolutePath, it.writable) },
         memoryBytes = (memoryMib ?: (s.ramGb * 1024L)) * 1024 * 1024,
         matchHostCpus = cpus?.let { it == "host" } ?: (s.smp > 1),

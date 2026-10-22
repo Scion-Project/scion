@@ -26,6 +26,9 @@ object VmState {
     /** Something the guest did that the user should see, e.g. "Guest kernel panicked: ...". Cleared on start. */
     @Volatile var notice: String? = null
         private set
+    /** The install that is (or last was) running; the output view and exit code belong to it. */
+    @Volatile var install: Install? = null
+        internal set
 
     private const val MAX_LINES = 400
     private val lines = ArrayDeque<String>()
@@ -86,15 +89,16 @@ class VmService : Service() {
         if (instance != null) return
         startForeground(NOTIF_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
 
-        val settings = VmSettings.load(this)
+        val selected = intent?.getStringExtra(EXTRA_INSTALL)?.let { Installs.get(this, it) } ?: Installs.current(this)
         // Developer override for this run only (see MainActivity); never saved.
         val debuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
-        val kind = intent?.getStringExtra(EXTRA_BACKEND)?.takeIf { debuggable }?.let { Backend.fromId(it) } ?: settings.backend
+        val kind = intent?.getStringExtra(EXTRA_BACKEND)?.takeIf { debuggable }?.let { Backend.fromId(it) }
         val dir = intent?.getStringExtra(EXTRA_VM_DIR)?.takeIf { debuggable }?.let { File(it) }
-        if (kind != settings.backend || dir != null) {
-            VmState.addLine("note: developer override: backend ${kind.label}" + (dir?.let { ", VM folder $it" } ?: ""))
-        }
-        val backend = VmBackend.create(this, kind, dir)
+        val install = if (kind != null || dir != null) Installs.developer(selected, kind, dir).also {
+            VmState.addLine("note: developer override: backend ${it.backend.label}, VM folder ${it.dir}")
+        } else selected
+        val settings = install.settings
+        val backend = VmBackend.create(this, install)
         val problems = backend.problems() + listOfNotNull(
             "a VM folder import is still running".takeIf { ImportState.running },
         )
@@ -106,6 +110,7 @@ class VmService : Service() {
         }
 
         VmState.notice(null)
+        VmState.install = install
         VmState.set(VmState.Status.STARTING, exit = null)
         val vm = backend.start(settings, VmState::addLine) ?: run {
             VmState.set(VmState.Status.STOPPED)
@@ -113,6 +118,7 @@ class VmService : Service() {
             return
         }
         instance = vm
+        runningBackend = backend
         wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "iosonpixel:vm").apply { acquire() }
         VmState.set(VmState.Status.RUNNING)
@@ -126,6 +132,7 @@ class VmService : Service() {
         Handler(Looper.getMainLooper()).post {
             if (instance === vm) {
                 instance = null
+                runningBackend = null
                 cleanup()
                 VmState.set(VmState.Status.STOPPED, exit = code)
                 stopSelf()
@@ -146,6 +153,7 @@ class VmService : Service() {
 
     override fun onDestroy() {
         instance?.kill()
+        runningBackend = null
         cleanup()
         super.onDestroy()
     }
@@ -174,12 +182,19 @@ class VmService : Service() {
         private const val CHANNEL = "vm"
         private const val NOTIF_ID = 1
         const val ACTION_STOP = "stop"
-        /** Debuggable builds only: run this backend / VM folder instead of the saved ones. */
+        /** Which install to run (its id); the selected one if absent. */
+        const val EXTRA_INSTALL = "install"
+        /** Debuggable builds only: run this backend / VM folder instead of the install's. */
         const val EXTRA_BACKEND = "backend"
         const val EXTRA_VM_DIR = "vm_dir"
 
-        fun start(ctx: Context, backend: Backend? = null, vmDir: File? = null) {
+        /** The backend of the VM that is running, for the display and buttons; null when none is. */
+        @Volatile var runningBackend: VmBackend? = null
+            private set
+
+        fun start(ctx: Context, install: Install, backend: Backend? = null, vmDir: File? = null) {
             ctx.startForegroundService(Intent(ctx, VmService::class.java).apply {
+                putExtra(EXTRA_INSTALL, install.id)
                 backend?.let { putExtra(EXTRA_BACKEND, it.id) }
                 vmDir?.let { putExtra(EXTRA_VM_DIR, it.absolutePath) }
             })

@@ -64,7 +64,11 @@ class VmLayout(val dir: File) {
     data class Ns(val name: String, val nsid: Int, val nstype: Int, val device: String = "nvme-ns")
 }
 
-/** User-tunable knobs, persisted in SharedPreferences. */
+/**
+ * User-tunable knobs, per install ([Install.settings], stored by [Installs]). [load] and [save]
+ * are the single-VM app's preferences (vm_settings): read once by the migration, and kept in
+ * step with the migrated install so a downgrade still works.
+ */
 data class VmSettings(
     /** At most [MAX_RAM_GB]: t8030 refuses to start with more. */
     val ramGb: Int = 4,
@@ -88,7 +92,15 @@ data class VmSettings(
     val inProcess: Boolean = false,
     /** Guest kernel security level, passed as a boot-arg (AVF backend only). */
     val security: Security = Security.DEFAULT,
+    /**
+     * Extra arguments, whitespace-separated, no quoting: appended to the QEMU command line, or
+     * to the AVF guest's kernel command line.
+     */
+    val extraArgs: String = "",
 ) {
+    /** [extraArgs] as tokens. */
+    val extraArgList: List<String> get() = extraArgs.split(Regex("\\s+")).filter { it.isNotEmpty() }
+
     /** What QEMU_VCPU_AFFINITY is set to for this run; empty means no pinning. */
     val effectiveVcpuAffinity: String
         get() = if (vcpuAffinity.equals(AUTO, ignoreCase = true)) TensorG5.vcpuAffinity(smp) else vcpuAffinity
@@ -98,7 +110,7 @@ data class VmSettings(
             .putInt("ram_gb", ramGb).putInt("smp", smp).putInt("tb_size_mb", tbSizeMb)
             .putBoolean("split_wx", splitWx).putString("vcpu_affinity", vcpuAffinity)
             .putString("backend", backend.id).putBoolean("in_process", inProcess)
-            .putString("security", security.id)
+            .putString("security", security.id).putString("extra_args", extraArgs)
             .apply()
     }
 
@@ -123,6 +135,7 @@ data class VmSettings(
                 backend = Backend.fromId(p.getString("backend", null))?.takeIf { it.implemented } ?: d.backend,
                 inProcess = p.getBoolean("in_process", d.inProcess),
                 security = Security.fromId(p.getString("security", null)) ?: d.security,
+                extraArgs = p.getString("extra_args", d.extraArgs) ?: d.extraArgs,
             )
         }
     }
@@ -177,50 +190,66 @@ object TensorG5 {
         if (smp <= 1) BIG_CORES else (List(smp - 1) { BIG_CORES } + LITTLE_CORES).joinToString(";")
 }
 
-/** Paths the app uses at runtime. */
-class AppPaths(ctx: Context) {
-    private val app = ctx.applicationContext
-
-    /** adb-pushable: /sdcard/Android/data/<pkg>/files/vm (FUSE-backed shared storage). */
-    val sharedVmDir = File(ctx.getExternalFilesDir(null), "vm")
-    /** /data/user/0/<pkg>/files/vm: app-internal storage, no FUSE in the I/O path. */
-    val internalVmDir = File(ctx.filesDir, "vm")
-
-    /**
-     * Where the VM in use lives. Only a completed move ([ImportService.move]) changes it, so it
-     * never points at a half-copied folder; imports and Start use whatever it says.
-     */
-    val vmInternal: Boolean get() = prefs(app).getBoolean(KEY_INTERNAL, false)
-    val vmDir: File get() = if (vmInternal) internalVmDir else sharedVmDir
+/**
+ * Paths the app uses at runtime for install [installId]: its sockets, logs and run records, so
+ * two installs never clobber each other. The install's VM folder itself is [Install.dir].
+ */
+class AppPaths(ctx: Context, val installId: String) {
+    private val external: File = ctx.getExternalFilesDir(null) ?: File(ctx.filesDir, "shared")
 
     val qemu = File(ctx.applicationInfo.nativeLibraryDir, "libqemu-system-aarch64.so")
     /** The in-process variant: QEMU as a library, and the JNI shim that calls it. */
     val qemuLib = File(ctx.applicationInfo.nativeLibraryDir, "libqemu-system-aarch64-shared.so")
     val qemuJni = File(ctx.applicationInfo.nativeLibraryDir, "libqemu_jni.so")
+    /** Keymaps etc.: read-only, shared by all installs. */
     val dataDir = File(ctx.filesDir, "qemu-data")
-    val vncSocket = File(ctx.filesDir, "vnc.sock")
-    val monitorSocket = File(ctx.filesDir, "monitor.sock")
+    val tmpDir: File = ctx.cacheDir
+
+    /** files/run/<id>: this install's sockets and run records (short, for the 108-byte socket path limit). */
+    val runDir = File(File(ctx.filesDir, "run"), installId)
+    val vncSocket = File(runDir, "vnc.sock")
+    val monitorSocket = File(runDir, "monitor.sock")
     /** QMP, for multi-touch input ([QmpTouch]). */
-    val qmpSocket = File(ctx.filesDir, "qmp.sock")
+    val qmpSocket = File(runDir, "qmp.sock")
     /**
      * Where the emulated iPhone's USB uplink connects out to. t8030 otherwise
      * defaults to a TCP listener, which needs the INTERNET permission (#67).
      */
-    val usbUplinkSocket = File(ctx.filesDir, "usb-uplink.sock")
-    val logFile = File(ctx.getExternalFilesDir(null), "qemu.log")
-    /** The AVF guest's console (and hvc2 log), next to qemu.log so the debug bundle picks it up. */
-    val avfLogFile = File(ctx.getExternalFilesDir(null), "avf-console.log")
-    val tmpDir: File = ctx.cacheDir
+    val usbUplinkSocket = File(runDir, "usb-uplink.sock")
+    /** The last run's status and output view, for the debug bundle. */
+    val lastRun = File(runDir, "last_run.txt")
+    val lastRunOutput = File(runDir, "last_run_output.txt")
+
+    /** <external files>/logs/<id>: adb-pullable logs; the debug bundle takes every *.log here. */
+    val logDir = File(File(external, "logs"), installId)
+    val logFile = File(logDir, "qemu.log")
+    /** The AVF guest's console (and hvc2 log). */
+    val avfLogFile = File(logDir, "avf-console.log")
+
+    /** Creates [runDir] and [logDir]; call before a run. */
+    fun prepare() {
+        runDir.mkdirs()
+        logDir.mkdirs()
+    }
 
     companion object {
+        /*
+         * The single-VM app's VM folder and its location flag (vm_paths: vm_internal). Only the
+         * install migrated from it ([Install.legacy]) uses them; the flag is kept in step with
+         * that install so an older build still finds its VM.
+         */
         private const val KEY_INTERNAL = "vm_internal"
-        private fun prefs(ctx: Context) = ctx.getSharedPreferences("vm_paths", Context.MODE_PRIVATE)
+        private fun prefs(ctx: Context) = ctx.applicationContext.getSharedPreferences("vm_paths", Context.MODE_PRIVATE)
 
-        /** Synchronous: this is the commit point of a move, so it must be on disk before the source goes. */
-        fun setVmInternal(ctx: Context, internal: Boolean) {
-            check(prefs(ctx.applicationContext).edit().putBoolean(KEY_INTERNAL, internal).commit()) {
-                "cannot save the VM location"
-            }
+        /** adb-pushable: /sdcard/Android/data/<pkg>/files/vm (FUSE-backed shared storage). */
+        fun legacySharedVmDir(ctx: Context) = File(ctx.getExternalFilesDir(null) ?: File(ctx.filesDir, "shared"), "vm")
+        /** /data/user/0/<pkg>/files/vm: app-internal storage, no FUSE in the I/O path. */
+        fun legacyInternalVmDir(ctx: Context) = File(ctx.filesDir, "vm")
+        fun legacyVmInternal(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_INTERNAL, false)
+
+        /** Synchronous: part of a move's commit point. */
+        fun setLegacyVmInternal(ctx: Context, internal: Boolean) {
+            check(prefs(ctx).edit().putBoolean(KEY_INTERNAL, internal).commit()) { "cannot save the VM location" }
         }
     }
 }
