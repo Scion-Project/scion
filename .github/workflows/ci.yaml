@@ -118,7 +118,7 @@ jobs:
         uses: actions/cache@v4.2.0
         with:
           path: native/build/sysroot
-          key: deps-sysroot-${{ runner.os }}-${{ hashFiles('native/build-android.sh') }}
+          key: deps-sysroot-${{ runner.os }}-${{ github.event.repository.name }}-${{ hashFiles('native/build-android.sh') }}
 
       # Sets up Gradle and caches ~/.gradle (caches + wrapper dists) automatically.
       - name: Set up Gradle
@@ -237,7 +237,7 @@ jobs:
         uses: actions/cache@v4.2.0
         with:
           path: native/build/sysroot
-          key: deps-sysroot-baseline-${{ runner.os }}-${{ hashFiles('native/build-android.sh') }}
+          key: deps-sysroot-baseline-${{ runner.os }}-${{ github.event.repository.name }}-${{ hashFiles('native/build-android.sh') }}
 
       # Sets up Gradle and caches ~/.gradle (caches + wrapper dists) automatically.
       - name: Set up Gradle
