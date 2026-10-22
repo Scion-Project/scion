@@ -387,7 +387,10 @@ class MainActivity : Activity() {
         }
         val dotColor = if (lastExit != null && lastExit != 0) Ui.BAD else ui.stateColor(st)
         statusDot.background = ui.pill(dotColor)
+        val notice = VmState.notice
+        statusDetail.setTextColor(if (notice != null) Ui.BAD else Ui.MUTED)
         statusDetail.text = when {
+            notice != null -> notice + (lastExit?.let { "\nLast exit: $it" } ?: "")
             lastExit != null -> "Last exit: $lastExit"
             st == VmState.Status.RUNNING && backend.hasDisplay -> "Open the display to use the iPhone."
             st == VmState.Status.RUNNING -> "No display yet: the guest console is in the output below."

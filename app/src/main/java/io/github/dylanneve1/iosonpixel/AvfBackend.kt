@@ -317,6 +317,10 @@ class AvfVm private constructor(
             val sink = { line: String ->
                 synchronized(file) { runCatching { file.write(line); file.write("\n"); file.flush() } }
                 onLine(line)
+                if (VmState.notice == null) panicMessage(line)?.let {
+                    log("avf: guest kernel panicked: $it")
+                    VmState.notice("Guest kernel panicked: $it")
+                }
             }
             val readers = listOfNotNull(
                 console?.let { reader("console", it, "", sink) },
@@ -335,6 +339,10 @@ class AvfVm private constructor(
             else -> r
         }
     }
+
+    /** The message of a guest kernel panic line (Linux or XNU style), else null. */
+    private fun panicMessage(line: String): String? =
+        PANIC.firstNotNullOfOrNull { it.find(line)?.groupValues?.get(1)?.trim() }
 
     private fun reader(name: String, input: InputStream, prefix: String, sink: (String) -> Unit) = Thread({
         runCatching {
@@ -385,6 +393,10 @@ class AvfVm private constructor(
          */
         const val NAME = "iosonpixel"
         private const val STOP_TIMEOUT_S = 10L
+        private val PANIC = listOf(
+            Regex("""Kernel panic - not syncing: (.*)"""),
+            Regex("""panic\(cpu \d+ caller [^)]*\): (.*)"""),
+        )
 
         /** The run in progress, for the display and buttons; one at a time (VmService). */
         @Volatile var current: AvfVm? = null
