@@ -582,3 +582,5 @@ tools/restore_bench.py --serial <adb serial> --runs 5 \
 
 On a phone with a usable PMU, `--profile-event cpu-cycles:u` gives cycle-accurate samples.
 The emulator only offers software clocks.
+
+Engine bump to pyre `f6ec19c` (GPU milestone-0 behind `gpu=on`, off by default; touch data-channel packets; SEP trace points + bounds fix): restore-boot milestones unchanged, see the latest table above.
