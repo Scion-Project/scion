@@ -28,7 +28,7 @@ repo then gets the result running on the phone.
                                                   └─ HMP monitor socket ◀─ button bar (F2–F6)
 ```
 
-* **`third_party/inferno`** is [dylanneve1/Inferno](https://github.com/dylanneve1/Inferno)'s
+* **`third_party/inferno`** is [dylanneve1/Inferno](https://github.com/dylanneve1/pyre)'s
   `pixel` branch: upstream Inferno plus the Android/Tensor patches (see below).
 * **`native/build-android.sh`** cross-compiles QEMU and its static deps (glib,
   pixman, nettle+GMP, libtasn1, lzfse) with the NDK, and drops the binary into
