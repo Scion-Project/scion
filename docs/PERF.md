@@ -490,6 +490,62 @@ build on Linux, boot on the Mac's emulator, merge back on Linux. The profile hol
 QEMU's branch and call counts, keyed by QEMU function names, so it's no Apple data. Still,
 don't commit one: it goes stale with every Inferno bump.
 
+## Idle host CPU
+
+Issue #63: host CPU while the guest idles. Measured with `tools/idle_bench.py`, which
+boots restore mode like `restore_bench.py`, then reads each QEMU thread's utime + stime
+from `/proc/<pid>/task/*/stat` at `waiting_host` and again 30 s later. Android emulator,
+Inferno `master` `a8ab2853c9`, `-smp 4`, release build, `-name debug-threads=on` for the
+thread names.
+
+| SEP inputs | runs | host cores while idle (30 s at `waiting_host`) | SEP vCPU |
+|---|---|---|---|
+| real (`AppleSEPROM-Cebu-B1` + the 14.0 SEP firmware) | 2 | **0.045, 0.053** | ≈0 |
+| `b .` placeholder ROM (`restore_bench` kit) | 1 | **≈1.26** | about one core (spinning) |
+
+Per thread with real SEP inputs (run 1): CPU 0 2.1%, main loop 1.4%, CPU 1 1.0%,
+CPU 2 0.0%; the SEP vCPU (CPU 3) and the other threads didn't register. The `b .` row
+  is from an earlier script version that paired threads by name, so only its total is
+  reliable; it matches the 1.28 cores above. A macOS run with real inputs agrees: in a
+  10 s `sample` at `waiting_host`, only CPU 0 was in `cpu_exec`, for about 1% of samples.
+
+- **The "spinning SEP" is the placeholder ROM, not the emulated hardware.** With the real
+  SEPROM the SEP vCPU sits in WFI and its host thread sleeps. In restore mode at
+  `waiting_host` the SEP is still in the SEPROM: restore sends the SEP firmware later.
+- **The `wfi` placeholder spins for a guest reason.** At idle the SEP's inbox holds the AP's
+  unread messages and `IOP_NONEMPTY` isn't masked (`apple_a7iop_mailbox_update_irq`
+  trace, macOS build), so an interrupt really is
+  pending. WFI wakes for a pending IRQ whatever `PSTATE.I` says, so it returns at once. A
+  real SEP with an unserviced, unmasked mailbox interrupt would do the same. This isn't
+  worth an emulator change; benchmarks should use real SEP inputs when they have them.
+- **The application vCPUs sleep.** In XNU's idle path (`arm64_retention_wfi`) the PC sits
+  after the `wfi`, and the host threads are in `qemu_wait_io_event`. `CYC_OVRD` and
+  `ACC_OVRD` are plain storage registers, which is fine: the WFI that follows is what sleeps.
+- **The guest's interrupt rate is sane.** With a log-trace build on macOS (same model), at
+  `waiting_host` over 20 s: about 62 virtual-timer interrupts/s, 60 IRQs/s from `disp0`
+  (AIC 317, the panel's vsync at `ADP_V4_PANEL_HZ`, with `OUTPUT_READY` enabled by the
+  guest), and about 500 `CNTV_TVAL` writes/s (XNU reprogramming its deadline on idle
+  entry and exit). SMC sensor reads come at 0.5 Hz.
+- **On the real Pixel at the home screen the SEP thread used about 4%**, in line with this.
+
+Not done yet:
+- A `restore_bench.py` median with real SEP inputs (the emulator lock was busy; no code
+  change was made, so there is nothing to regress).
+- Idle per-thread numbers after a full boot on the phone (only the ~4% SEP figure so far).
+- WFE stays a yield, as upstream. XNU uses WFE only in contended spin-lock loops (713 sites in
+  14.0, none in the idle path). Sleeping on WFE would need wake-ups from exclusive-monitor
+  clears, which TCG can't see cheaply.
+- Possible small win: `adp_v4_vsync_tick` runs at 60 Hz even when the guest hasn't enabled
+  `OUTPUT_READY`. Stopping the timer while it's masked saves host wake-ups, but only after
+  the display driver masks it, which it didn't do here.
+
+```sh
+tools/idle_bench.py --serial <adb serial> --runs 3 --smp 4 --idle 30 \
+  --qemu <qemu-system-aarch64> --kernel <kernelcache> --dtb <DeviceTree.im4p> \
+  --trustcache <restore .trustcache> --ramdisk <restore ramdisk .dmg> \
+  --sep-rom <SEP ROM> --sep-fw <SEP firmware>
+```
+
 ## Notes and caveats
 
 - **SEP placeholders.** The emulator has no real SEP ROM or firmware.
@@ -503,8 +559,8 @@ don't commit one: it goes stale with every Inferno bump.
   - Since Inferno#28 (`3f2e61d`), t8030 recognises a SEP ROM that can only idle (both
     of these placeholders) and keeps the SEP core powered off, so neither spins any more;
     QEMU prints ``SEP ROM `…` only idles (WFI/B loop); keeping the SEP core powered off``.
-  - **On the phone, with real SEP inputs, check the SEP thread's CPU use.** A vCPU that
-    keeps waking from WFI costs a whole host core (battery, thermals).
+  - **With real SEP inputs the SEP vCPU doesn't spin** (#63, [Idle host CPU](#idle-host-cpu)).
+    The spin above comes from the placeholder ROMs, not from the emulated SEP hardware.
 - `restore_bench.py` takes only your own kit files and never downloads anything. Each run
   is stopped through QEMU's own `-pidfile`, never by name or pattern: `pkill -f` matched
   the adb shell itself during development, and a name-based kill stops other people's runs
