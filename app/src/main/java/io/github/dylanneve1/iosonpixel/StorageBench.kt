@@ -23,8 +23,7 @@ object StorageBench {
     private const val RANDOM_OPS = 2000
 
     fun run(ctx: Context, mb: Int) {
-        val paths = AppPaths(ctx)
-        val targets = listOf("shared", "internal").zip(listOf(paths.sharedVmDir.parentFile!!, ctx.filesDir))
+        val targets = listOf("shared", "internal").zip(listOf(AppPaths.legacySharedVmDir(ctx).parentFile!!, ctx.filesDir))
         for (round in 1..3) for ((label, dir) in targets) {
             val line = runCatching { once(dir, mb) }.getOrElse { "failed: $it" }
             Log.i(TAG, "round $round $label (${dir.path}): $line")

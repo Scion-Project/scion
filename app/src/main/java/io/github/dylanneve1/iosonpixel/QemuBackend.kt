@@ -16,15 +16,14 @@ import java.util.concurrent.TimeUnit
  * by [RfbClient]), the buttons go through the human monitor ([Monitor]) and
  * multi-touch goes through QMP ([QmpTouch]).
  */
-class QemuBackend(ctx: Context, private val vmDir: File? = null) : VmBackend {
+class QemuBackend(ctx: Context, private val install: Install) : VmBackend {
     private val app = ctx.applicationContext
-    private val paths = AppPaths(app)
-    /** Read on each use: a move to internal storage changes [AppPaths.vmDir]. */
-    private val dir get() = vmDir ?: paths.vmDir
+    private val paths = AppPaths(app, install.id)
+    private val dir get() = install.dir
 
     override val kind = Backend.QEMU
 
-    private val inProcess get() = VmSettings.load(app).inProcess
+    private val inProcess get() = install.settings.inProcess
     private val libOk get() = paths.qemuLib.isFile && paths.qemuJni.isFile
 
     override fun checks(): List<VmBackend.Check> {
@@ -52,6 +51,7 @@ class QemuBackend(ctx: Context, private val vmDir: File? = null) : VmBackend {
 
     override fun start(settings: VmSettings, log: (String) -> Unit): VmBackend.Instance? {
         val vm = VmLayout(dir)
+        paths.prepare()
         installDataFiles()
         paths.vncSocket.delete()
         paths.monitorSocket.delete()
@@ -59,7 +59,7 @@ class QemuBackend(ctx: Context, private val vmDir: File? = null) : VmBackend {
 
         val extra = QemuCommand.extraArgs(app)
         if (extra.isNotEmpty()) log("debug: ${extra.size} extra QEMU args appended from files/qemu-extra-args.txt")
-        val cmd = QemuCommand.build(paths, vm, settings) + extra
+        val cmd = QemuCommand.build(paths, vm, settings) + settings.extraArgList + extra
         log("$ " + cmd.joinToString(" "))
 
         if (settings.inProcess) {
