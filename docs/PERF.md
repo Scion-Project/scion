@@ -28,6 +28,11 @@ Issue #48. Measured on the Android **emulator** (`sdk_gphone64_arm64`, 8 host co
   them off) stop QEMU refilling its TLB and jump cache on every address-space switch: a KPTI
   Linux system call is 6.1x cheaper. **The restore boot is unchanged by both** (little FP, 46
   ASID switches/s). See [Native FP and ASID TLB contexts](#native-fp-and-asid-tlb-contexts-2026-10-22).
+- **Update 2026-10-22 (Inferno 2a65516 → 52f62f4): the softmmu memory path.** Two fewer
+  instructions in every guest load/store's inline TLB lookup (Inferno #39) and a 1024-entry
+  TLB floor with a cheaper `tlb_reset_dirty` (#40): **the restore boot is 5.3% faster
+  (13.84 → 13.11 s) and uses 7.4% less host CPU** (12+12 emulator runs). See
+  [Softmmu memory path](#softmmu-memory-path-2026-10-22).
 - **Compiler options (#77, below):** PGO (profile from the restore boot) takes 5.9% off the
   boot's wall time and 8.1% off its host CPU on current Inferno, or 6.3% and 10.0% with
   ThinLTO. ThinLTO alone gives ≤3.6% (within noise) and makes the libraries 11% smaller; `-O3`
@@ -261,6 +266,35 @@ so its switches were already cheap. Native FP on: 21/21 boots identical mileston
 ASID contexts on: 80 boots, all with identical milestones except one that hit the known
 `Kernel data abort` flake at pc `…99126d4` (above); the same flake hit 2 of 65 boots with the
 contexts off or on unmodified master, so its rate is unchanged.
+
+## Softmmu memory path (2026-10-22)
+
+Inferno 2a65516 → 52f62f4, both changes merged with CI green and boot-validated. Docs:
+Inferno `docs/SOFTMMU.md`.
+
+| PR | Change |
+|---|---|
+| [Inferno#39](https://github.com/dylanneve1/Inferno/pull/39) | The inline TLB lookup before every guest load/store is 8 host instructions (+1 if unaligned) instead of 10: the `sub` that formed the `CPUTLBDescFast` address folds into the `ldp`, and with the addend moved next to the comparators one `ldp` loads comparator and addend. Generated code per TB in the boot: 248 → 233 bytes. Adds microbenchmarks w10 (TLB-hit loads/stores) and w11 (refills) |
+| [Inferno#40](https://github.com/dylanneve1/Inferno/pull/40) | The softmmu TLB no longer shrinks below 1024 entries (was 64; XNU's frequent flushes kept it at 64–256): page-table walks in a host boot 1.2–1.4M → 0.5M, victim-TLB hits 2–5.7M → 0.4–1M. `tlb_reset_dirty` (run whenever a page gains translated code) now scans only TLBs filled since their last flush and skips empty entries without reading `CPUTLBEntryFull`; without that, a larger TLB made the boot slower. `-accel tcg,x-tlb-bits=N` sets the floor (6 = old) |
+
+**Restore boot** (`restore_bench.py`, `-smp 4`, `wfi` SEP placeholder, CI Android binaries,
+interleaved):
+
+| | `waiting_host` | host CPU (user + sys) |
+|---|---|---|
+| Inferno 2a65516, 12 runs | 13.84 s [13.64–16.84] | 12.04 s |
+| **52f62f4 (#39 + #40), 12 runs** | **13.11 s [12.82–16.25]** | **11.15 s** |
+| #39 alone vs 2a65516, 10 + 10 runs | 13.67 vs 13.88 s | 11.71 vs 12.16 s |
+| #40 alone vs 2a65516, 10 + 10 runs (floor 64 / 1024 / 4096) | 13.81 / 13.39 / 13.47 vs 13.91 s | 11.88 / 11.59 / 11.56 vs 12.15 s |
+
+`BSD root` 3.89 → 3.69 s. Identical milestones in every run of these batches; one
+`Kernel data abort … 99126d4` (the IOMFB flake, fixed separately in Inferno#41) in the
+4096-entry set only.
+
+**Microbenchmarks** (a13-test, emulator, median of 5): w10 TLB-hit loads/stores 0.42 → 0.38 s;
+w11 loads over 4096 pages 0.97 s → 0.08 s with `x-tlb-bits=12` (fits the TLB), unchanged at
+the 1024 default; w1/w4/w9 within noise. Linux guest (upstream 10.2.2 port, 4 KiB pages):
+no measurable change.
 
 ## Optimisation ideas, ranked
 
