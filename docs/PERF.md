@@ -104,7 +104,7 @@ and the main loop takes about 4%.
 
 ## TCG optimisations (2026-10-22)
 
-Four Inferno changes, each merged with CI green. The numbers below come from interleaved
+Inferno changes, each merged with CI green. The numbers below come from interleaved
 runs on the same emulator, under a lock so runs never overlap.
 
 | PR | Change |
@@ -114,6 +114,7 @@ runs on the same emulator, under a lock so runs never overlap.
 | [Inferno#25](https://github.com/dylanneve1/Inferno/pull/25) | A PCREL TB invalidation clears the TB's 64 possible jump-cache slots instead of every vCPU's whole 16k-entry cache |
 | [Inferno#26](https://github.com/dylanneve1/Inferno/pull/26) | Writes to those storage-only registers, and to their `_GL11` views, no longer end the TB. They caused about ⅔ of the 496k sysreg-write TB exits per boot |
 | [Inferno#27](https://github.com/dylanneve1/Inferno/pull/27) | `hw/arm/tests/run-a13-bench.py` + `tcg_bench.S`: the microbenchmarks below, bare metal on the `a13-test` machine, no Apple code |
+| [Inferno#28](https://github.com/dylanneve1/Inferno/pull/28) | t8030 keeps the SEP core powered off when its ROM can only idle (a loop of only WFI/WFE/NOP/YIELD/`B`, like the `wfi` and `b .` placeholders), so placeholder SEP inputs no longer spin a host core. Real SEPROMs are never matched. See [below](#placeholder-sep-roms-inferno28) |
 
 **Setup.** Android emulator `sdk_gphone64_arm64` on the Mac mini (8 vCPUs, 4 GB; host load
 about 3–5 from other work). The QEMU binaries are the CI `qemu-android-arm64` artifacts,
@@ -133,6 +134,32 @@ with the `wfi` SEP placeholder. This emulator is slower than the one in the tabl
 All 18 boots reached `waiting_host` with no panic. Most of the restore boot is guest-side
 waiting (the 3 s `enable_usb` stall and the timeouts), so the CPU-bound `BSD root` phase
 and the CPU total show the gain best.
+
+### Placeholder SEP ROMs (Inferno#28)
+
+Same emulator, -smp 4, master `339be2c` (before) vs `3f2e61d` (after). Both are release
+Android cross builds made the same way (unstripped, log trace backend), run interleaved under
+the bench lock.
+
+| SEP ROM | | `launchd` | `waiting_host` | host CPU, user + sys | idle host CPU, 30 s at `waiting_host` |
+|---|---|---|---|---|---|
+| `wfi` | before (n=10) | 6.5 s | 18.8 s | 20.6 s | 0.71 cores (SEP vCPU 64%) |
+| `wfi` | after (n=11) | 5.7 s | **13.8 s (−27%)** | **12.2 s (−41%)** | **0.06–0.09 cores** |
+| `b .` | before (n=11) | 6.5 s | 17.4 s | 22.5 s | 1.03 cores (SEP vCPU 96%) |
+| `b .` | after (n=11) | 5.7 s | **13.8 s (−21%)** | **12.3 s (−45%)** | **0.07 cores** |
+
+Boot numbers are medians and the idle column is n=2. Before, the SEP vCPU spun. The `wfi`
+loop also took the BQL on every wake, so it competed with the application vCPUs: every
+milestone now arrives earlier, in the same order. The guest's SEP lines
+(`AppleSEPManager::start`, `_setPowerState 0 -> 2`, `AppleSEPKeyStore`) are unchanged, and
+a SEP ROM that does real work (`hw/arm/tests/sep_iommu_ro_test.S`) behaves exactly as
+before. Idle host CPU is now close to the ~0.05 cores measured with real SEP inputs. **Restore
+boot numbers in this file from before 3f2e61d include the spinning SEP placeholder**, so
+they aren't comparable with later runs.
+
+One pre-existing flake turned up: a guest `Kernel data abort` panic at pc `…99126d4`,
+after IOMFB's `rt_bandwidth_setup(): bandwidth values not found` and `DRIVER DIDN'T LOAD`.
+It hit 1 of 21 runs before and 1 of 23 after.
 
 ### `-smp` (after the changes)
 
@@ -240,6 +267,9 @@ Estimated benefit is relative to the 13.1 s `-smp 4` boot.
     similar timings: 13.1 s vs 13.7 s with the `b .` ROM.
   - The profile uses the `b .` ROM with the SEP thread excluded. Under `simpleperf`, the
     `wfi` ROM's lock traffic slowed the profiled run to 38.6 s, so it isn't representative.
+  - Since Inferno#28 (`3f2e61d`), t8030 recognises a SEP ROM that can only idle (both
+    of these placeholders) and keeps the SEP core powered off, so neither spins any more;
+    QEMU prints ``SEP ROM `…` only idles (WFI/B loop); keeping the SEP core powered off``.
   - **On the phone, with real SEP inputs, check the SEP thread's CPU use.** A vCPU that
     keeps waking from WFI costs a whole host core (battery, thermals).
 - `restore_bench.py` takes only your own kit files and never downloads anything. Each run
