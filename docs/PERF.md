@@ -16,6 +16,11 @@ Issue #48. Measured on the Android **emulator** (`sdk_gphone64_arm64`, 8 host co
 - In host CPU (AP side), **34% runs guest code**. The biggest QEMU-side cost is
   **indirect-branch TB lookup (≈18%, `helper_lookup_tb_ptr` alone 12%)**, then translation,
   system-register helpers and TLB fills at about 6–7% each.
+- **Update 2026-10-22: TCG fast paths (Inferno #22, #23, #25, #26) cut the boot's host CPU by
+  5% and `BSD root` by 9%**: `waiting_host` 19.75 → 18.82 s at `-smp 4` on a slower emulator
+  than the one above. On the microbenchmarks, an indirect-branch return is 29% cheaper, a
+  `TPIDR_EL1` read goes from about 24 ns to under 1 ns, and storage-only system-register
+  writes no longer end the TB. See [TCG optimisations](#tcg-optimisations-2026-10-22).
 
 ## Setup
 
@@ -97,6 +102,80 @@ Top QEMU symbols: `helper_lookup_tb_ptr` 12.1%, `qht_lookup_custom` 2.7%,
 `flush_idcache_range` 1.1%. Per thread, CPU 0 does about twice the work of CPUs 1 and 2,
 and the main loop takes about 4%.
 
+## TCG optimisations (2026-10-22)
+
+Four Inferno changes, each merged with CI green. The numbers below come from interleaved
+runs on the same emulator, under a lock so runs never overlap.
+
+| PR | Change |
+|---|---|
+| [Inferno#22](https://github.com/dylanneve1/Inferno/pull/22) | Jump-cache hit in `lookup_and_goto_ptr` with the TB state computed inline: no indirect call, no stack frame, one compare branch. About 115 → 69 host instructions per hit |
+| [Inferno#23](https://github.com/dylanneve1/Inferno/pull/23) | The GXF-banked TPIDR/SPSR/ELR/ESR/FAR_EL1 become plain field loads/stores, with the GL1 copy chosen at translation time from the TB's MMU index. Before, every access called two helpers (`lookup_cp_reg` + `get/set_cp_reg64`). Adds the `gxf_banked_el1` a13-test to CI |
+| [Inferno#25](https://github.com/dylanneve1/Inferno/pull/25) | A PCREL TB invalidation clears the TB's 64 possible jump-cache slots instead of every vCPU's whole 16k-entry cache |
+| [Inferno#26](https://github.com/dylanneve1/Inferno/pull/26) | Writes to those storage-only registers, and to their `_GL11` views, no longer end the TB. They caused about ⅔ of the 496k sysreg-write TB exits per boot |
+| [Inferno#27](https://github.com/dylanneve1/Inferno/pull/27) | `hw/arm/tests/run-a13-bench.py` + `tcg_bench.S`: the microbenchmarks below, bare metal on the `a13-test` machine, no Apple code |
+
+**Setup.** Android emulator `sdk_gphone64_arm64` on the Mac mini (8 vCPUs, 4 GB; host load
+about 3–5 from other work). The QEMU binaries are the CI `qemu-android-arm64` artifacts,
+the same build as the app, but stripped. The kit and the command are the same as above,
+with the `wfi` SEP placeholder. This emulator is slower than the one in the tables above
+(master boots in 19.75 s here vs 13.1 s there), so compare only within this section.
+
+### Restore boot (`restore_bench.py`, medians)
+
+| Milestone | master `0d6b857`, n=6 | + #22 #23 #25, n=6 | + #26 (= master `339be2c`), n=6 |
+|---|---|---|---|
+| `BSD root: md0` | 4.33 s | 4.12 s | **3.95 s (−9%)** |
+| `launchd` hello | 7.04 s | 6.87 s | **6.59 s (−6%)** |
+| **`waiting_host`** | 19.75 s | 19.09 s | **18.82 s (−4.7%)** |
+| host CPU (user + sys) | 21.15 s | 20.36 s | **20.07 s (−5%)** |
+
+All 18 boots reached `waiting_host` with no panic. Most of the restore boot is guest-side
+waiting (the 3 s `enable_usb` stall and the timeouts), so the CPU-bound `BSD root` phase
+and the CPU total show the gain best.
+
+### `-smp` (after the changes)
+
+| | `-smp 2` | `-smp 3` | `-smp 4` |
+|---|---|---|---|
+| `waiting_host`, master `339be2c` | **12.30 s** (n=4) | 16.84 s (n=3) | 18.82 s (n=6) |
+| `waiting_host`, master `0d6b857` | 12.78 s (n=4) | | 19.75 s (n=6) |
+
+The multi-vCPU stall (#51) is unchanged and still dominates. `-smp 2` remains the right
+choice **for restore boots**. The app default stays at 4 (3 application cores + SEP): a
+normal boot to SpringBoard hasn't been measured, and its UI workload can use the extra
+cores.
+
+### Microbenchmarks (`run-a13-bench.py`, a13-test machine, median of 5)
+
+| Workload | master `0d6b857` | + #22 #23 #25 | + #26 |
+|---|---|---|---|
+| w1: hot `BL`/`RET`, 240M returns | 3.03 s | 2.15 s (−29%) | 2.15 s |
+| w2: `BLR`/`RET` over 4096 targets | 4.33 s | 4.03 s (−7%) | 4.03 s |
+| w2s: same over 16384 targets | 3.78 s | 3.61 s (−4.5%) | 3.59 s |
+| w3: 320M `MRS TPIDR_EL1` | 7.95 s | 0.21 s (−97%) | 0.21 s |
+| w4: ALU loop (control) | 2.92 s | 2.90 s | 2.89 s |
+| w5: w2 + 62.5k TB invalidations | 3.10 s | 1.95 s (−37%) | 2.00 s |
+| w6: 40M `MSR TPIDR_EL1`/`ELR_EL1` | 3.89 s | 2.54 s (−35%) | **0.04 s** |
+
+**What didn't pay off, or doesn't apply here:**
+- **#25 has no effect on this boot.** `info jit` at `waiting_host` shows `TB invalidate
+  count 0` (163k TBs, `-smp 4`). It helps guests that write over code they have run
+  (JITs, page reuse under memory pressure), which needs confirming on the phone's UI
+  workload.
+- **TB size and cross-page chaining.** t8030 already uses 16 KiB target pages
+  (`minimum_page_bits = 14`), so TLB entries and `goto_tb` chaining already cover XNU's
+  16 KiB pages. The boot used 96 MB of the 1 GiB translation buffer, so a different
+  `tb-size` changes nothing.
+- **`helper_guarded_page_check`** (2.4% in the profile above) is gone since Inferno#20
+  dropped BTI from the A13 model.
+- **The cp-register hash** (`helper_lookup_cp_reg`, 2.1%) mostly served TPIDR_EL1 reads,
+  12.5M of the roughly 15M helper-path accesses counted in Inferno#23, which #23 removed. What's left (CNTVCT_EL0,
+  about 2.5M) isn't worth a faster table.
+- **Host-side microbenchmarks on the Mac are unreliable.** Single runs on Apple silicon
+  were bimodal (2.0 s or 7.6 s for the same binary and workload), probably from P/E-core
+  placement. The emulator's medians agreed within ±2%.
+
 ## Optimisation ideas, ranked
 
 Estimated benefit is relative to the 13.1 s `-smp 4` boot.
@@ -113,13 +192,17 @@ Estimated benefit is relative to the 13.1 s `-smp 4` boot.
    - **Now: use `-smp 2` for restore boots.** Restore runs on the Mac in the user's flow,
      so this doesn't block the phone path. It isn't yet known whether a normal boot to
      SpringBoard is also faster with fewer vCPUs; measure that before changing defaults.
-2. **Indirect-branch TB lookup (≈18% of CPU).** `helper_lookup_tb_ptr` is the
+2. **Indirect-branch TB lookup (≈18% of CPU).** *Done in part: Inferno#19 (hit rate 91% →
+   97%), #22 (cheaper hit), #25 (no full clears on TB invalidation); see
+   [TCG optimisations](#tcg-optimisations-2026-10-22). Open: the dependent `tb->cs_base` load
+   on the hit path, and the jump-cache misses on the phone's UI workload.* `helper_lookup_tb_ptr` is the
    `goto_ptr` path taken on returns and indirect jumps; `qht_lookup_custom` shows it often
    misses the per-CPU jump cache and falls through to the global hash table.
    - *Investigate:* the jump-cache hit rate. Check whether the cache is flushed too often
      (TLB flushes, ASID or PAC-key changes), and whether `arm_get_tb_cpu_state` and
      `curr_cflags` can avoid recomputation on every lookup.
-3. **System-register helpers (≈6.5%).** Guest `mrs`/`msr` go through `lookup_cp_reg`,
+3. **System-register helpers (≈6.5%).** *Done for the hottest ones: Inferno#23 (TPIDR/SPSR/
+   ELR/ESR/FAR_EL1 without helpers) and #26 (their writes no longer end the TB).* Guest `mrs`/`msr` go through `lookup_cp_reg`,
    `get_cp_reg64` and `access_check_cp_reg` helpers.
    - *Investigate:* count accesses per encoding in a debug build. Make the hot constant or
      plain-field registers `ARM_CP_CONST` or no-`accessfn` ones, so TCG can inline the
@@ -133,7 +216,8 @@ Estimated benefit is relative to the 13.1 s `-smp 4` boot.
    generation, icache flush per TB), so a bigger `tb-size` won't help a first boot.
    - *Possible:* fewer TB invalidations (see 4). Translations can't be cached across QEMU
      launches today.
-6. **Inferno `helper_guarded_page_check` (≈2.4%).** It's called often enough to show up.
+6. **Inferno `helper_guarded_page_check` (≈2.4%).** *Gone: Inferno#20 removed BTI from the A13
+   model, so the check is no longer emitted.* It's called often enough to show up.
    - *Check:* whether it can be skipped or inlined when the page or exception level can't
      be guarded.
 7. **Host clock reads (≈2.7%).** `clock_gettime` via the vDSO comes from guest
