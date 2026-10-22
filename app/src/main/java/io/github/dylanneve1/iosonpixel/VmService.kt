@@ -23,6 +23,9 @@ object VmState {
         private set
     @Volatile var lastExit: Int? = null
         private set
+    /** Something the guest did that the user should see, e.g. "Guest kernel panicked: ...". Cleared on start. */
+    @Volatile var notice: String? = null
+        private set
 
     private const val MAX_LINES = 400
     private val lines = ArrayDeque<String>()
@@ -36,6 +39,11 @@ object VmState {
             lines.addLast(line)
             while (lines.size > MAX_LINES) lines.removeFirst()
         }
+        notifyListeners()
+    }
+
+    fun notice(text: String?) {
+        notice = text
         notifyListeners()
     }
 
@@ -97,6 +105,7 @@ class VmService : Service() {
             return
         }
 
+        VmState.notice(null)
         VmState.set(VmState.Status.STARTING, exit = null)
         val vm = backend.start(settings, VmState::addLine) ?: run {
             VmState.set(VmState.Status.STOPPED)
