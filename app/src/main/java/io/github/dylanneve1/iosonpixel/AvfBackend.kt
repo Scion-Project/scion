@@ -90,6 +90,7 @@ class AvfBackend(
         for (d in s.disks) append(" disk=").append(d.path).append(if (d.writable) ":rw" else ":ro")
         append(" mem=").append(s.memoryBytes / (1024 * 1024)).append("M")
         append(" cpus=").append(if (s.matchHostCpus) "host" else "1")
+        s.gpu?.let { append(" gpu=").append(it.backend).append(":").append(it.contextTypes.joinToString(",")) }
         append(" params=\"").append(s.params.joinToString(" ")).append('"')
     }
 
@@ -189,6 +190,10 @@ object AvfSupport {
  * cpus=host                 # optional, 1 or host; default: 1 if the vCPUs setting is 1, else host
  * display=1125x2436         # optional: the screen size the guest is asked to draw, with the
  *                           #   Experimental AVF display setting (default 1125x2436)
+ * gpu=gfxstream             # optional: a virtio-gpu drawn by the phone's GPU (crosvm --gpu, gfxstream
+ *                           #   backend); the guest's /dev/vgpu3d and, with boot-arg gl=1, CoreAnimation
+ *                           #   use it. Off when absent or "off".
+ * gpu.contexts=gfxstream-gles  # optional: crosvm context types, comma-separated
  * ```
  */
 class AvfLayout(val dir: File) {
@@ -206,6 +211,11 @@ class AvfLayout(val dir: File) {
     val memoryMib: Long? get() = prop("memory_mib")?.toLongOrNull()
     val cpus: String? get() = prop("cpus")
     val displaySize: Pair<Int, Int>? get() = prop("display")?.let { Scfb.parseSize(it) }
+    val gpu: AvfApi.Gpu?
+        get() = prop("gpu")?.takeIf { it != "off" && it != "0" }?.let { backend ->
+            AvfApi.Gpu(backend = if (backend == "1" || backend == "on") "gfxstream" else backend,
+                contextTypes = (prop("gpu.contexts") ?: "gfxstream-gles").split(',').map { it.trim() }.filter { it.isNotEmpty() })
+        }
 
     data class Disk(val file: File, val writable: Boolean)
 
@@ -257,6 +267,7 @@ class AvfLayout(val dir: File) {
         disks = disks.map { AvfApi.Disk(it.file.absolutePath, it.writable) },
         memoryBytes = (memoryMib ?: (s.ramGb * 1024L)) * 1024 * 1024,
         matchHostCpus = cpus?.let { it == "host" } ?: (s.smp > 1),
+        gpu = gpu,
     )
 
     companion object {
