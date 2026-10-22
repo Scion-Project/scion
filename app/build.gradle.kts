@@ -5,6 +5,8 @@ plugins {
 android {
     namespace = "io.github.dylanneve1.iosonpixel"
     compileSdk = 36
+    // For the AVF display's frame copy (src/main/cpp); the same NDK as native/build-android.sh.
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "io.github.dylanneve1.iosonpixel"
@@ -13,6 +15,11 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         ndk { abiFilters += "arm64-v8a" }
+        externalNativeBuild { cmake { arguments += "-DANDROID_STL=none" } }
+    }
+
+    externalNativeBuild {
+        cmake { path = file("src/main/cpp/CMakeLists.txt") }
     }
 
     buildTypes {

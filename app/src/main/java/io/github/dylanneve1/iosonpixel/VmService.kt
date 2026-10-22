@@ -94,8 +94,10 @@ class VmService : Service() {
         val debuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
         val kind = intent?.getStringExtra(EXTRA_BACKEND)?.takeIf { debuggable }?.let { Backend.fromId(it) }
         val dir = intent?.getStringExtra(EXTRA_VM_DIR)?.takeIf { debuggable }?.let { File(it) }
-        val install = if (kind != null || dir != null) Installs.developer(selected, kind, dir).also {
-            VmState.addLine("note: developer override: backend ${it.backend.label}, VM folder ${it.dir}")
+        val avfDisplay = intent?.takeIf { debuggable && it.hasExtra(EXTRA_AVF_DISPLAY) }?.getBooleanExtra(EXTRA_AVF_DISPLAY, false)
+        val install = if (kind != null || dir != null || avfDisplay != null) Installs.developer(selected, kind, dir, avfDisplay).also {
+            VmState.addLine("note: developer override: backend ${it.backend.label}, VM folder ${it.dir}" +
+                if (it.backend == Backend.AVF) ", experimental display ${if (it.settings.avfDisplay) "on" else "off"}" else "")
         } else selected
         val settings = install.settings
         val backend = VmBackend.create(this, install)
@@ -187,16 +189,18 @@ class VmService : Service() {
         /** Debuggable builds only: run this backend / VM folder instead of the install's. */
         const val EXTRA_BACKEND = "backend"
         const val EXTRA_VM_DIR = "vm_dir"
+        const val EXTRA_AVF_DISPLAY = "avf_display"
 
         /** The backend of the VM that is running, for the display and buttons; null when none is. */
         @Volatile var runningBackend: VmBackend? = null
             private set
 
-        fun start(ctx: Context, install: Install, backend: Backend? = null, vmDir: File? = null) {
+        fun start(ctx: Context, install: Install, backend: Backend? = null, vmDir: File? = null, avfDisplay: Boolean? = null) {
             ctx.startForegroundService(Intent(ctx, VmService::class.java).apply {
                 putExtra(EXTRA_INSTALL, install.id)
                 backend?.let { putExtra(EXTRA_BACKEND, it.id) }
                 vmDir?.let { putExtra(EXTRA_VM_DIR, it.absolutePath) }
+                avfDisplay?.let { putExtra(EXTRA_AVF_DISPLAY, it) }
             })
         }
 

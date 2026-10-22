@@ -286,12 +286,38 @@ disk.0=root.img           # optional virtio-blk disks, in order (vda, vdb, ...)
 disk.0.writable=true      # read-only unless set
 memory_mib=2048           # default: the Guest RAM setting
 cpus=host                 # 1 or host; default: 1 if vCPUs is 1, else host
+display=1125x2436         # with the experimental display: the screen size asked for
 ```
 
 **Guest security** (Settings → Advanced) is appended to the kernel command
 line as `security=full|bringup|off`, replacing any `security=` in `params`.
 The kernel decides what the levels mean. The default is the most secure level
 the kernel boots with; until the kernel defines its levels, that's `bringup`.
+
+**Experimental AVF display** (Settings → Advanced, per install, off by
+default) shows the guest's screen and takes touch, the way scion-avf's display
+test app does (its `docs/DISPLAY-INPUT.md` and `display/SCFB.md`). The app
+lends the VM an ashmem region as a slice of guest RAM (the "SCFB" shared
+framebuffer), adds a virtio-input multi-touch device, and appends
+`scfb.addr=… scfb.size=… scfb.w=… scfb.h=…` to the kernel command line. The
+region sits 4 MiB below the top of guest RAM; a Linux guest has to keep out of
+it with `mem=` in `params`, while avfboot handles that for XNU. Frames are
+copied into the display as they're published (XR24 into a BGRA buffer, XB24
+into RGBX, a plain `memcpy` either way).
+
+The Java API has no setters for those two devices, so the app adds them to
+its own VM's config in its own process, through the framework's internal
+VirtualizationService. That needs two more prefixes in the exemption:
+
+```sh
+adb shell settings put global hidden_api_blacklist_exemptions \
+  "'Landroid/system/virtualmachine/VirtualMachineCustomImageConfig,Landroid/system/virtualmachine/VirtualMachineConfig\$Builder;->setCustomImageConfig(,Landroid/system/virtualmachine/VirtualizationService;,Landroid/system/virtualizationservice/'"
+adb shell am force-stop $PKG
+```
+
+If a member is missing, or Android refuses the devices (virtmgr rejects the
+config, or the VM dies at once with them), the app says "AVF display
+unavailable on this Android build: <reason>" and boots console-only.
 
 Stop is crosvm's hard stop, like pulling the plug: there's no clean-shutdown
 request for custom VMs yet.
@@ -303,6 +329,9 @@ without changing the saved settings, and press Start:
 adb shell am start -n $PKG/.MainActivity --es backend avf \
   --es vm_dir /data/user/0/$PKG/files/<folder> --ez start true
 ```
+
+Add `--ez avf_display true` (or `false`) to override the experimental display
+setting for that session.
 
 Files the app reads must be owned by the app. A folder that `adb shell mkdir`
 created belongs to shell, and the app can't read what's pushed into it. Push
