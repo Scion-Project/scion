@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
+import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.WindowInsets
@@ -25,6 +26,11 @@ class DisplayActivity : Activity() {
     private var touch: VmTouch? = null
     private lateinit var backend: VmBackend
     private lateinit var ui: Ui
+    private lateinit var bar: LinearLayout
+    private var prefs = DisplayPrefs()
+    /** The largest system gesture inset (px), for the automatic border width. */
+    private var gestureInset = 0
+    private val hideBar = Runnable { if (prefs.bar == DisplayPrefs.BarMode.AUTO_HIDE) bar.visibility = View.GONE }
     private val onState: () -> Unit = {
         if (VmState.status == VmState.Status.STOPPED && !attachOnly) {
             client?.close()
@@ -48,7 +54,7 @@ class DisplayActivity : Activity() {
 
         screen = ScreenView(this)
         surfaceScreen = backend.surfaceDisplay()?.let { SurfaceScreen(this, it) }
-        val bar = LinearLayout(this).apply {
+        bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             setBackgroundColor(Color.BLACK)
@@ -66,11 +72,29 @@ class DisplayActivity : Activity() {
                 backend.press(Key.POWER)
             }
         }
-        setContentView(LinearLayout(this).apply {
+        val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.BLACK)
             addView(surfaceScreen ?: screen, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
             addView(bar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        })
+        }
+        setContentView(root)
+        // Android's edge gestures still own the screen edges in immersive mode; the automatic
+        // border is as wide as the widest of them.
+        root.setOnApplyWindowInsetsListener { v, insets ->
+            val g = insets.getInsets(WindowInsets.Type.systemGestures())
+            val m = insets.getInsets(WindowInsets.Type.mandatorySystemGestures())
+            val inset = maxOf(maxOf(g.left, g.top, g.right, g.bottom), maxOf(m.left, m.top, m.right, m.bottom))
+            if (inset != gestureInset) {
+                gestureInset = inset
+                applyPrefs()
+            }
+            v.onApplyWindowInsets(insets)
+        }
+        for (edge in listOfNotNull(screen.edge, surfaceScreen?.edge)) {
+            edge.onBorderTap = { showBar() }
+            edge.onTwoFingerTap = { showBar() }
+        }
 
         window.insetsController?.apply {
             hide(WindowInsets.Type.systemBars())
@@ -80,6 +104,10 @@ class DisplayActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        prefs = DisplayPrefs.load(this)
+        applyPrefs()
+        bar.removeCallbacks(hideBar)
+        bar.visibility = if (prefs.bar == DisplayPrefs.BarMode.ALWAYS) View.VISIBLE else View.GONE
         VmState.observe(onState)
         connect()
     }
@@ -92,6 +120,30 @@ class DisplayActivity : Activity() {
         touch = null
         screen.touch = null
         super.onStop()
+    }
+
+    /** Border width and snapping from [prefs]. */
+    private fun applyPrefs() {
+        val border = when {
+            !prefs.border -> 0
+            prefs.borderDp == DisplayPrefs.AUTO ->
+                maxOf(gestureInset, ui.dp(DisplayPrefs.MIN_AUTO_DP)).coerceAtMost(ui.dp(DisplayPrefs.MAX_DP))
+            else -> ui.dp(prefs.borderDp)
+        }
+        screen.border = border
+        surfaceScreen?.border = border
+        for (edge in listOfNotNull(screen.edge, surfaceScreen?.edge)) {
+            edge.snap = prefs.snap
+            edge.snapPx = ui.dp(DisplayPrefs.SNAP_DP).toFloat()
+        }
+    }
+
+    /** Auto-hide: show the button bar, hidden again after [BAR_SHOWN_MS] without use. */
+    private fun showBar() {
+        if (prefs.bar != DisplayPrefs.BarMode.AUTO_HIDE) return
+        bar.visibility = View.VISIBLE
+        bar.removeCallbacks(hideBar)
+        bar.postDelayed(hideBar, BAR_SHOWN_MS)
     }
 
     private fun connect() {
@@ -116,12 +168,14 @@ class DisplayActivity : Activity() {
         // Haptic tick on every press: the guest reacts slowly, so confirm the tap locally.
         addView(ui.button(label, Ui.Style.TONAL) {
             it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            showBar() // restarts the auto-hide countdown
             onClick()
         }.apply {
             textSize = 14f
             setPadding(0, 0, 0, 0)
             if (onLong != null) setOnLongClickListener {
                 it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                showBar()
                 onLong()
                 true
             }
@@ -133,5 +187,6 @@ class DisplayActivity : Activity() {
 
     companion object {
         const val EXTRA_ATTACH = "attach"
+        const val BAR_SHOWN_MS = 3000L
     }
 }

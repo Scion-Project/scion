@@ -28,6 +28,11 @@ class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
     }
     private var fbW = 0
     private var fbH = 0
+    private val guest = android.graphics.Rect()
+    val edge = EdgeInput(this)
+    /** Black border (px) the guest image is inset by; touches there go to [edge]. */
+    var border = 0
+        set(value) { if (field != value) { field = value; requestLayout() } }
 
     /** Shown over the display until the first frame size arrives. */
     var placeholder: String
@@ -43,20 +48,16 @@ class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
         addView(label)
         placeholder = "Waiting for the VM display…"
         surfaceView.holder.addCallback(this)
-        surfaceView.setOnTouchListener { v, e -> touch(v, e) }
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val w = MeasureSpec.getSize(widthMeasureSpec)
         val h = MeasureSpec.getSize(heightMeasureSpec)
         setMeasuredDimension(w, h)
-        var cw = w
-        var ch = h
-        if (fbW > 0 && fbH > 0) {
-            val scale = minOf(w.toFloat() / fbW, h.toFloat() / fbH)
-            cw = (fbW * scale).toInt()
-            ch = (fbH * scale).toInt()
-        }
+        // Until the framebuffer size is known, fill the area inside the border.
+        val b = EdgeMap.fit(w, h, border, fbW.takeIf { it > 0 } ?: (w - 2 * border), fbH.takeIf { it > 0 } ?: (h - 2 * border))
+        val cw = maxOf(b.width, 1)
+        val ch = maxOf(b.height, 1)
         surfaceView.measure(MeasureSpec.makeMeasureSpec(cw, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(ch, MeasureSpec.EXACTLY))
         label.measure(MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY))
     }
@@ -66,6 +67,23 @@ class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
         val top = (b - t - surfaceView.measuredHeight) / 2
         surfaceView.layout(left, top, left + surfaceView.measuredWidth, top + surfaceView.measuredHeight)
         label.layout(0, 0, r - l, b - t)
+        guest.set(left, top, left + surfaceView.measuredWidth, top + surfaceView.measuredHeight)
+        edge.excludeSideEdges(guest)
+    }
+
+    // The whole view, border included, takes touch; the SurfaceView itself never sees it.
+    override fun onInterceptTouchEvent(ev: MotionEvent) = true
+
+    @SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (guest.isEmpty) return false
+        // In guest-image coordinates, edge swipes snapped onto the edge.
+        val e = edge.map(event, guest)
+        try {
+            return touch(e, guest.width(), guest.height())
+        } finally {
+            e.recycle()
+        }
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) = display.setSurface(holder.surface, ::onFbSize)
@@ -84,16 +102,16 @@ class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
         }
     }
 
-    private fun touch(v: View, e: MotionEvent): Boolean {
-        if (display.motion(e, v.width, v.height)) return true
+    private fun touch(e: MotionEvent, w: Int, h: Int): Boolean {
+        if (display.motion(e, w, h)) return true
         val down = when (e.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> true
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> false
             else -> return true
         }
-        val x = e.x.toInt().coerceIn(0, v.width - 1)
-        val y = e.y.toInt().coerceIn(0, v.height - 1)
-        display.touch(x, y, v.width, v.height, down)
+        val x = e.x.toInt().coerceIn(0, w - 1)
+        val y = e.y.toInt().coerceIn(0, h - 1)
+        display.touch(x, y, w, h, down)
         return true
     }
 }
