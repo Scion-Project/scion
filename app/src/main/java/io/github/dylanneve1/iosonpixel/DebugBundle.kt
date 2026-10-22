@@ -37,8 +37,6 @@ import java.util.zip.ZipOutputStream
  */
 object DebugBundle {
     internal const val BUNDLE_DIR = "debug-bundles"
-    private const val LAST_RUN = "last_run.txt"
-    private const val LAST_RUN_LOG = "last_run_output.txt"
     /** Logs can be huge (the guest serial console goes to stdio); keep the tail. */
     private const val MAX_LOG_BYTES = 8L * 1024 * 1024
 
@@ -63,28 +61,32 @@ object DebugBundle {
             if (st == lastStatus) return@observe
             lastStatus = st
             runCatching {
+                // Each install keeps its own run record (files/run/<id>/).
+                val install = VmState.install ?: return@runCatching
+                val paths = AppPaths(app, install.id).apply { prepare() }
                 val log = VmState.log()
                 if (st == VmState.Status.STARTING) lastCommand = null
                 commandFromLog(log)?.let { lastCommand = it }
-                File(app.filesDir, LAST_RUN).writeText(
-                    "time: ${now()}\nstatus: ${st.name.lowercase()}\n" +
+                paths.lastRun.writeText(
+                    "time: ${now()}\ninstall: ${install.id} (${install.name})\nstatus: ${st.name.lowercase()}\n" +
                         "exit code: ${VmState.lastExit ?: "n/a"}\n" +
                         "command: ${lastCommand ?: "n/a"}\n" +
-                        "QEMU_VCPU_AFFINITY: ${pinning(VmSettings.load(app))}\n",
+                        "QEMU_VCPU_AFFINITY: ${pinning(install.settings)}\n",
                 )
-                if (st == VmState.Status.STOPPED) File(app.filesDir, LAST_RUN_LOG).writeText(log)
+                if (st == VmState.Status.STOPPED) paths.lastRunOutput.writeText(log)
             }
         }
     }
 
-    /** Builds the zip (blocking; call off the main thread) and returns it. */
+    /** Builds the zip for the selected install (blocking; call off the main thread) and returns it. */
     fun build(ctx: Context): File {
         val app = ctx.applicationContext
-        val paths = AppPaths(app)
+        val install = Installs.current(app)
+        val paths = AppPaths(app, install.id)
         val dir = File(app.cacheDir, BUNDLE_DIR).apply { mkdirs() }
         dir.listFiles()?.forEach { it.delete() } // one bundle at a time
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        val out = File(dir, "iosonpixel-debug-$stamp.zip")
+        val out = File(dir, "iosonpixel-debug-install${install.id}-$stamp.zip")
         val names = mutableListOf<String>()
 
         ZipOutputStream(out.outputStream().buffered()).use { zip ->
@@ -112,20 +114,21 @@ object DebugBundle {
                 names += name
             }
 
-            text("summary.txt", summary(app, paths))
-            text("qemu-command.txt", command(app, paths))
-            text("settings.txt", settings(app))
-            text("vm-folder.txt", vmFolder(paths))
+            text("summary.txt", summary(app, install, paths))
+            text("qemu-command.txt", command(install, paths))
+            text("settings.txt", settings(app, install))
+            text("vm-folder.txt", vmFolder(install))
             text("cpu.txt", cpu())
-            text("memory-storage.txt", memoryAndStorage(app, paths))
+            text("memory-storage.txt", memoryAndStorage(app, install, paths))
             // QEMU runs with -serial stdio, so qemu.log is also the guest serial log.
             tail("qemu.log", paths.logFile)
             // Any other logs written next to it (e.g. a separate serial log), never the VM folder.
             paths.logFile.parentFile?.listFiles { f -> f.isFile && f.name.endsWith(".log") && f != paths.logFile }
                 ?.sortedBy { it.name }?.forEach { tail("logs/${it.name}", it) }
             val view = VmState.log()
-            text("app-output.txt", "Output view of this app process (up to 400 lines):\n" + view.ifEmpty { "(empty)" } + "\n")
-            tail("last-run-output.txt", File(app.filesDir, LAST_RUN_LOG))
+            text("app-output.txt", "Output view of this app process (up to 400 lines), last run: " +
+                (VmState.install?.let { "install ${it.id} (${it.name})" } ?: "none") + "\n" + view.ifEmpty { "(empty)" } + "\n")
+            tail("last-run-output.txt", paths.lastRunOutput)
             text("README.txt", readme(names + "README.txt"))
         }
         return out
@@ -160,7 +163,7 @@ object DebugBundle {
 
     // ---- sections ------------------------------------------------------------
 
-    private fun summary(app: Context, paths: AppPaths): String = buildString {
+    private fun summary(app: Context, install: Install, paths: AppPaths): String = buildString {
         val pi = app.packageManager.getPackageInfo(app.packageName, 0)
         appendLine("generated: ${now()}")
         appendLine("app: ${app.packageName} ${pi.versionName} (${pi.longVersionCode})")
@@ -179,47 +182,54 @@ object DebugBundle {
             .onSuccess { list -> list.forEach { appendLine("  ${if (it.ok) "ok  " else "FAIL"} ${it.text.lineSequence().first()}") } }
             .onFailure { appendLine("  (failed: $it)") }
         appendLine()
-        appendLine("vm status: ${VmState.status.name.lowercase()}")
+        appendLine("install: ${install.id} (${install.name}), backend ${install.backend.label}")
+        appendLine("all installs: " + Installs.all(app).joinToString { "${it.id} ${it.name} [${it.backend.id}]" })
+        appendLine("vm status: ${VmState.status.name.lowercase()}" + (VmState.install?.let { " (install ${it.id})" } ?: ""))
         appendLine("last exit code (this process): ${VmState.lastExit ?: "n/a"}")
-        val last = File(app.filesDir, LAST_RUN)
-        appendLine("last recorded run:")
+        val last = paths.lastRun
+        appendLine("last recorded run of this install:")
         appendLine(if (last.isFile) last.readText().trimEnd().prependIndent("  ") else "  (none recorded)")
         appendLine()
         appendLine("readiness checks:")
-        runCatching { VmBackend.current(app).checks() }
+        runCatching { VmBackend.create(app, install).checks() }
             .onSuccess { list -> list.forEach { appendLine("  ${if (it.ok) "ok  " else "FAIL"} ${it.text}") } }
             .onFailure { appendLine("  (failed: $it)") }
     }
 
-    private fun command(app: Context, paths: AppPaths): String {
-        commandFromLog(VmState.log())?.let { return "# from this process's output view (exact)\n$it\n" }
-        File(app.filesDir, LAST_RUN).takeIf { it.isFile }?.readLines()
+    private fun command(install: Install, paths: AppPaths): String {
+        if (VmState.install?.id == install.id) {
+            commandFromLog(VmState.log())?.let { return "# from this process's output view (exact)\n$it\n" }
+        }
+        paths.lastRun.takeIf { it.isFile }?.readLines()
             ?.firstOrNull { it.startsWith("command: ") && it != "command: n/a" }
             ?.let { return "# from the last recorded run (exact)\n${it.removePrefix("command: ")}\n" }
-        val vm = VmLayout(paths.vmDir)
+        if (install.backend != Backend.QEMU) return "# no run recorded\n"
+        val vm = VmLayout(install.dir)
         if (vm.problems().isNotEmpty()) return "# no run recorded, and the VM folder isn't complete enough to build one\n"
         return runCatching {
             "# no run recorded; what Start would run now with the current settings\n" +
-                QemuCommand.build(paths, vm, VmSettings.load(app)).joinToString(" ") + "\n"
+                (QemuCommand.build(paths, vm, install.settings) + install.settings.extraArgList).joinToString(" ") + "\n"
         }.getOrElse { "# no run recorded; reconstructing failed: $it\n" }
     }
 
-    private fun settings(app: Context): String = buildString {
-        val s = VmSettings.load(app)
+    private fun settings(app: Context, install: Install): String = buildString {
+        val s = install.settings
+        appendLine("install ${install.id} (${install.name})${if (install.legacy) ", migrated from the single-VM app" else ""}")
         appendLine(s.toString())
         appendLine()
         appendLine("effective QEMU_VCPU_AFFINITY: ${pinning(s)}" +
             if (s.vcpuAffinity.equals(VmSettings.AUTO, ignoreCase = true)) " (auto, from ${s.smp} vCPUs)" else " (as set)")
         appendLine()
-        appendLine("raw preferences (vm_settings):")
+        appendLine("raw preferences of the single-VM app (vm_settings; mirrors the migrated install):")
         app.getSharedPreferences("vm_settings", Context.MODE_PRIVATE).all.toSortedMap()
             .forEach { (k, v) -> appendLine("  $k = $v") }
     }
 
     /** Names, sizes and dates only; never file contents (except vm.properties' names). */
-    private fun vmFolder(paths: AppPaths): String = buildString {
-        val dir = paths.vmDir
-        appendLine("folder: ${dir.absolutePath} (${if (paths.vmInternal) "internal app storage" else "shared storage"})")
+    private fun vmFolder(install: Install): String = buildString {
+        val dir = install.dir
+        appendLine("folder: ${dir.absolutePath} (${if (install.internal) "internal app storage" else "shared storage"})")
+        appendLine("other location: ${if (install.internal) install.sharedDir else install.internalDir}")
         // Both only name files (and AVF's kernel command line).
         for (name in listOf(VmLayout.MANIFEST, AvfLayout.MANIFEST)) {
             val manifest = File(dir, name)
@@ -272,7 +282,7 @@ object DebugBundle {
         appendLine(read(File("/proc/cpuinfo")))
     }
 
-    private fun memoryAndStorage(app: Context, paths: AppPaths): String = buildString {
+    private fun memoryAndStorage(app: Context, install: Install, paths: AppPaths): String = buildString {
         val mi = ActivityManager.MemoryInfo()
         (app.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(mi)
         appendLine("ram: total ${mib(mi.totalMem)}, available ${mib(mi.availMem)}, " +
@@ -281,7 +291,7 @@ object DebugBundle {
         appendLine()
         appendLine("storage (free / total):")
         for ((label, f) in listOf(
-            "vm folder" to paths.vmDir, "app external files" to paths.logFile.parentFile,
+            "vm folder" to install.dir, "app logs" to paths.logDir,
             "app internal files" to app.filesDir, "cache" to app.cacheDir,
         )) {
             val st = f?.let { d -> generateSequence(d) { it.parentFile }.firstOrNull { it.exists() } }

@@ -33,3 +33,10 @@ android {
         jniLibs.useLegacyPackaging = true
     }
 }
+
+dependencies {
+    // JVM unit tests only (app/src/test); nothing here ships in the APK.
+    testImplementation("junit:junit:4.13.2")
+    // android.jar's org.json is stubs that throw in JVM tests; the real one for InstallMigration.
+    testImplementation("org.json:json:20240303")
+}
