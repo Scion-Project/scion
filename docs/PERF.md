@@ -253,13 +253,14 @@ variant, CI Android binaries):
 | + #37, `asid-tlbs=0` | 13.74 s | 12.03 s |
 | + ASID TLB contexts, `x-asid-jc=off` | 13.83 s | 12.03 s |
 | + jump caches (= 2a65516 default) | 13.68 s | 11.96 s |
-| 2a65516 as bumped here (this PR's CI APK) | BUMP_BOOT | BUMP_CPU |
+| 2a65516 as bumped here (this PR's CI APK), two batches of 10 | 13.81 s / 14.05 s | 11.84 s / 12.29 s |
 
 No change, as expected: the restore boot runs little FP code, and XNU switches ASID only
 about 46 times a second there (553 switches in a 10 s host boot) and maps its kernel global,
 so its switches were already cheap. Native FP on: 21/21 boots identical milestones (#38).
-ASID contexts on: 50/50 boots identical milestones, no panic. The `Kernel data abort` flake at
-pc `…99126d4` (above) still turns up on unmodified builds.
+ASID contexts on: 80 boots, all with identical milestones except one that hit the known
+`Kernel data abort` flake at pc `…99126d4` (above); the same flake hit 2 of 65 boots with the
+contexts off or on unmodified master, so its rate is unchanged.
 
 ## Optimisation ideas, ranked
 
