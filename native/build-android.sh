@@ -13,6 +13,22 @@
 #   TUNE_CFLAGS       CPU tuning flags (default: Tensor G5 / Cortex-X4 tuning)
 #   INFERNO_SRC       Inferno source tree (default: third_party/inferno)
 #   JOBS              parallel jobs
+#
+# Compiler options for QEMU's own code, all off by default (the deps always use
+# OPT_CFLAGS). See docs/PERF.md, "Compiler and linker options", for what each
+# one measured. Unset, QEMU is compiled exactly as before (-O2, no LTO, no PGO).
+#   QEMU_OPT          optimisation level (default: -O2; meson's release -O3 is overridden)
+#   QEMU_TUNE         CPU flags for QEMU only (default: TUNE_CFLAGS), e.g.
+#                     "-march=armv8.2-a+crypto+dotprod+rcpc -mtune=cortex-a720" (NDK r28 has no a725)
+#   QEMU_LTO          thin | off: ThinLTO for QEMU, linked by the NDK's lld (default: off)
+#   QEMU_PGO_PROFILE  merged .profdata to optimise with (-fprofile-use); see `pgo-merge`
+#                     and native/pgo-profile.sh
+#   QEMU_PGO_GENERATE device directory: build an instrumented QEMU into $WORK/qemu-pgo-gen
+#                     that writes .profraw files there (not installed into the app)
+# A build tree is reconfigured by itself when these (or the tuning) change.
+#
+#   native/build-android.sh pgo-merge OUT.profdata RAW...  merges .profraw files
+#   with the NDK's llvm-profdata (it must match the NDK's clang).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,6 +48,33 @@ JOBS="${JOBS:-$(sysctl -n hw.logicalcpu 2>/dev/null || nproc)}"
 # at compile time; TCG's host backend does its own runtime feature detection.
 TUNE_CFLAGS="${TUNE_CFLAGS:--march=armv8.2-a+crypto+dotprod+rcpc -mtune=cortex-x4}"
 OPT_CFLAGS="-O2 -fPIC -ffunction-sections -fdata-sections $TUNE_CFLAGS"
+
+QEMU_OPT="${QEMU_OPT:--O2}"
+QEMU_TUNE="${QEMU_TUNE:-$TUNE_CFLAGS}"
+QEMU_LTO="${QEMU_LTO:-off}"
+QEMU_PGO_PROFILE="${QEMU_PGO_PROFILE:-}"
+QEMU_PGO_GENERATE="${QEMU_PGO_GENERATE:-}"
+case "$QEMU_LTO" in thin|off) ;; *) echo "QEMU_LTO must be thin or off" >&2; exit 2 ;; esac
+[[ -z "$QEMU_PGO_GENERATE" || -z "$QEMU_PGO_PROFILE" ]] ||
+  { echo "set QEMU_PGO_GENERATE or QEMU_PGO_PROFILE, not both" >&2; exit 2; }
+# These come after meson's own -O3 on the command line, so they win.
+QEMU_CFLAGS="$QEMU_OPT -fPIC -ffunction-sections -fdata-sections $QEMU_TUNE"
+QEMU_LDFLAGS=""
+# With LTO, the -O level on the link line sets lld's LTO optimisation level.
+[[ "$QEMU_LTO" == off ]] || QEMU_LDFLAGS+=" $QEMU_OPT"
+if [[ -n "$QEMU_PGO_GENERATE" ]]; then
+  # Atomic counter updates: several vCPU threads run the same code at once.
+  QEMU_CFLAGS+=" -fprofile-generate=$QEMU_PGO_GENERATE -fprofile-update=atomic"
+  QEMU_LDFLAGS+=" -fprofile-generate=$QEMU_PGO_GENERATE"
+fi
+if [[ -n "$QEMU_PGO_PROFILE" ]]; then
+  [[ -f "$QEMU_PGO_PROFILE" ]] || { echo "QEMU_PGO_PROFILE: no such file: $QEMU_PGO_PROFILE" >&2; exit 1; }
+  QEMU_PGO_PROFILE="$(cd "$(dirname "$QEMU_PGO_PROFILE")" && pwd)/$(basename "$QEMU_PGO_PROFILE")"
+  # A profile from an older Inferno still helps for the code that didn't change;
+  # functions that did are compiled without it, so don't warn about each one.
+  QEMU_CFLAGS+=" -fprofile-use=$QEMU_PGO_PROFILE -Wno-profile-instr-out-of-date"
+  QEMU_CFLAGS+=" -Wno-profile-instr-unprofiled -Wno-backend-plugin"
+fi
 
 if [[ -z "${ANDROID_NDK_HOME:-}" ]]; then
   ANDROID_NDK_HOME="$(ls -d "$HOME"/Library/Android/sdk/ndk/* 2>/dev/null | sort -V | tail -1)"
@@ -80,7 +123,11 @@ EOF
 chmod +x "$WORK/pkg-config"
 export PKG_CONFIG="$WORK/pkg-config"
 
-cat > "$WORK/android-arm64.cross" <<EOF
+cross_file() { # system cflags ldflags
+  local link
+  link="$(printf "'%s'," -L"$PREFIX/lib" $3)"
+  link="${link%,}"
+  cat <<EOF
 [binaries]
 c = '$CC'
 cpp = '$CXX'
@@ -91,16 +138,16 @@ pkg-config = '$WORK/pkg-config'
 cmake = '$(command -v cmake)'
 
 [host_machine]
-system = 'android'
+system = '$1'
 cpu_family = 'aarch64'
 cpu = 'aarch64'
 endian = 'little'
 
 [built-in options]
-c_args = [$(printf "'%s'," $OPT_CFLAGS -I"$PREFIX/include")]
-cpp_args = [$(printf "'%s'," $OPT_CFLAGS -I"$PREFIX/include")]
-c_link_args = ['-L$PREFIX/lib']
-cpp_link_args = ['-L$PREFIX/lib']
+c_args = [$(printf "'%s'," $2 -I"$PREFIX/include")]
+cpp_args = [$(printf "'%s'," $2 -I"$PREFIX/include")]
+c_link_args = [$link]
+cpp_link_args = [$link]
 default_library = 'static'
 prefix = '$PREFIX'
 libdir = 'lib'
@@ -127,10 +174,12 @@ CMAKE_FIND_ROOT_PATH_MODE_PROGRAM = 'NEVER'
 # libyuv's JPEG paths aren't used (vnc_jpeg is disabled); don't look for it.
 CMAKE_DISABLE_FIND_PACKAGE_JPEG = 'TRUE'
 EOF
+}
+cross_file android "$OPT_CFLAGS" "" > "$WORK/android-arm64.cross"
 
 # QEMU itself is built as a "linux" host: bionic is Linux, and QEMU only enables
 # its Linux code paths (gettid, tgkill, sysfs, ...) when meson reports linux.
-sed "s/^system = 'android'/system = 'linux'/" "$WORK/android-arm64.cross" > "$WORK/android-arm64-qemu.cross"
+cross_file linux "$QEMU_CFLAGS" "$QEMU_LDFLAGS" > "$WORK/android-arm64-qemu.cross"
 
 download() { # url out; never leaves a partial file behind
   curl -fL --retry 5 --retry-all-errors --retry-delay 3 -o "$2" "$1" || { rm -f "$2"; return 1; }
@@ -281,14 +330,37 @@ configure_qemu() { # builddir [extra meson args...]
     -Dusb_redir=disabled -Dseccomp=disabled -Dcap_ng=disabled -Dxkbcommon=disabled \
     -Dvde=disabled -Dalsa=disabled -Doss=disabled -Dpa=disabled -Dpipewire=disabled \
     -Djack=disabled -Dsndio=disabled -Dfuse=disabled -Dmultiprocess=disabled \
-    -Dvalgrind=disabled -Dlibkeyutils=disabled -Dauth_pam=disabled -Dbrlapi=disabled "$@"
+    -Dvalgrind=disabled -Dlibkeyutils=disabled -Dauth_pam=disabled -Dbrlapi=disabled \
+    $(lto_args) "$@"
+  qemu_config_id "$@" > "$b/.android-config"
+}
+
+lto_args() {
+  [[ "$QEMU_LTO" == off ]] || echo "-Db_lto=true -Db_lto_mode=$QEMU_LTO"
+}
+
+# Everything that decides how QEMU is compiled, so a build tree configured with
+# other options (tuning, -O level, LTO, PGO) gets reconfigured instead of reused.
+qemu_config_id() { # [extra meson args...]
+  cat "$WORK/android-arm64-qemu.cross"
+  echo "$(lto_args) $*"
+}
+
+needs_configure() { # builddir [extra meson args...]
+  local b="$1"; shift
+  [[ -n "${FRESH:-}" || ! -f "$b/build.ninja" ]] || ! qemu_config_id "$@" | cmp -s - "$b/.android-config"
 }
 
 build_qemu() {
   [[ -f "$SRC_QEMU/meson.build" ]] || { echo "run: git submodule update --init" >&2; exit 1; }
   local b="$WORK/qemu"
-  # Reconfigure only on the first build or with FRESH=1; otherwise rebuild incrementally.
-  if [[ -n "${FRESH:-}" || ! -f "$b/build.ninja" ]]; then
+  if [[ -n "$QEMU_PGO_GENERATE" ]]; then
+    build_qemu_pgo_gen
+    return
+  fi
+  # Reconfigure on the first build, with FRESH=1, or when the compiler options
+  # changed; otherwise rebuild incrementally.
+  if needs_configure "$b"; then
     rm -rf "$b"
     configure_qemu "$b"
   fi
@@ -313,7 +385,7 @@ build_qemu_lib() {
     echo "skipping the in-process library: this Inferno has no system_shared_lib option yet" >&2
     return
   fi
-  if [[ -n "${FRESH:-}" || ! -f "$b/build.ninja" ]]; then
+  if needs_configure "$b" -Dsystem_shared_lib=true -Db_staticpic=true; then
     rm -rf "$b"
     configure_qemu "$b" -Dsystem_shared_lib=true -Db_staticpic=true
   fi
@@ -324,11 +396,31 @@ build_qemu_lib() {
   echo "installed $JNI_OUT/libqemu-system-aarch64-shared.so and libqemu_jni.so"
 }
 
+# An instrumented QEMU for collecting a PGO profile (docs/PERF.md). It writes
+# $QEMU_PGO_GENERATE/default_<id>.profraw when it exits normally (SIGINT/SIGTERM/quit,
+# not SIGKILL); runs of the same binary accumulate in that file.
+build_qemu_pgo_gen() {
+  local b="$WORK/qemu-pgo-gen"
+  if needs_configure "$b"; then
+    rm -rf "$b"
+    configure_qemu "$b"
+  fi
+  ninja -C "$b" -j"$JOBS" qemu-system-aarch64
+  echo "instrumented QEMU: $b/qemu-system-aarch64 (profiles go to $QEMU_PGO_GENERATE on the device)"
+}
+
+pgo_merge() { # out.profdata raw.profraw...
+  [[ $# -ge 2 ]] || { echo "usage: $0 pgo-merge OUT.profdata RAW.profraw..." >&2; exit 2; }
+  "$TC/bin/llvm-profdata" merge -o "$@"
+  "$TC/bin/llvm-profdata" show "$1" | tail -3
+}
+
 case "${1:-all}" in
   deps) build_deps ;;
   qemu) build_qemu ;;
   qemu-lib) build_qemu_lib ;;
+  pgo-merge) shift; pgo_merge "$@" ;;
   all) build_deps; build_qemu ;;
   gmp|nettle|tasn1|lz4|lzfse|glib|pixman) "build_$1" ;;
-  *) echo "usage: $0 [deps|qemu|qemu-lib|all|gmp|nettle|tasn1|lz4|lzfse|glib|pixman]" >&2; exit 2 ;;
+  *) echo "usage: $0 [deps|qemu|qemu-lib|all|pgo-merge|gmp|nettle|tasn1|lz4|lzfse|glib|pixman]" >&2; exit 2 ;;
 esac
