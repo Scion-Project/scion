@@ -93,4 +93,10 @@ class ScfbTest {
         assertEquals(1124, Scfb.scale(540f, 540, 1125))
         assertEquals(0, Scfb.scale(10f, 0, 1125))
     }
+
+    @Test fun aTimestampGoesAlongAsMscTimestampBeforeTheSync() {
+        val ev = events(Scfb.touchReport(Scfb.Action.MOVE, listOf(Scfb.Pointer(0, 10, 20)), 0, timeUs = 0x1_2345_6789L))
+        assertEquals(Triple(4, 5, 0x2345_6789), ev[ev.size - 2])
+        assertEquals(Triple(0, 0, 0), ev.last())
+    }
 }

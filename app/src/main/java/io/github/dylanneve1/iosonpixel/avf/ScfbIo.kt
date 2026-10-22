@@ -6,7 +6,6 @@ import android.os.ParcelFileDescriptor
 import android.os.SharedMemory
 import android.system.ErrnoException
 import android.system.Os
-import android.system.OsConstants
 import android.view.MotionEvent
 import android.view.Surface
 import io.github.dylanneve1.iosonpixel.HardwareButton
@@ -72,8 +71,8 @@ class ScfbIo(
             val pair = ParcelFileDescriptor.createSocketPair()
             touchOurs = pair[0]
             touchTheirs = pair[1]
-            // Never block the UI thread on a guest that isn't reading: drop the report instead.
-            Os.fcntlInt(pair[0].fileDescriptor, OsConstants.F_SETFL, OsConstants.O_NONBLOCK)
+            // Blocking: reports go out whole from a writer thread (ScfbScreen), never from the UI
+            // thread. A non-blocking write cut short split an evdev event and scrambled the stream.
             hook = Hook(hooks!!, r).also { it.install() }
         } catch (e: Exception) {
             release()
@@ -126,6 +125,7 @@ class ScfbIo(
         hook = null
         screen?.let { s ->
             s.setSurface(null, null)
+            s.closeTouch()
             s.stats()?.let { log("avf: display: $it") }
         }
         screen = null
@@ -249,6 +249,23 @@ class ScfbIo(
         private val r = region!!
         private val buffer = map!!
         private val touch = touchOurs!!
+        private val touchQueue = TouchQueue()
+
+        /** Writes queued touch reports whole, blocking while crosvm isn't reading (see [TouchQueue]). */
+        private val touchWriter = Thread({
+            val out = FileOutputStream(touch.fileDescriptor)
+            while (true) {
+                val report = touchQueue.take() ?: break
+                try {
+                    out.write(report)
+                } catch (_: java.io.IOException) {
+                    break   // the VM is gone
+                }
+            }
+        }, "scfb-touch").apply {
+            isDaemon = true
+            start()
+        }
         private val lock = Any()
         private var thread: Thread? = null
         private var control: ByteBuffer? = null
@@ -282,6 +299,13 @@ class ScfbIo(
             control = null
         }
 
+        fun closeTouch() {
+            touchQueue.close()
+            if (touchQueue.coalesced + touchQueue.dropped > 0) {
+                log("avf: touch: ${touchQueue.coalesced} moves merged while the guest was busy, ${touchQueue.dropped} reports dropped")
+            }
+        }
+
         fun stats(): String? {
             val frames = totals[0]
             if (frames == 0L) return null
@@ -307,12 +331,8 @@ class ScfbIo(
                     Scfb.scale(event.getY(i), h, r.height),
                 )
             }
-            val report = Scfb.touchReport(action, pointers, event.actionIndex)
-            try {
-                FileOutputStream(touch.fileDescriptor).write(report)
-            } catch (_: java.io.IOException) {
-                // EAGAIN: the guest isn't reading touch (yet); drop the report.
-            }
+            touchQueue.offer(Scfb.touchReport(action, pointers, event.actionIndex, if (android.os.Build.VERSION.SDK_INT >= 34) event.eventTimeNanos / 1000 else event.eventTime * 1000),
+                action == Scfb.Action.MOVE)
             return true
         }
 
