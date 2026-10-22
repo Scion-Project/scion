@@ -178,6 +178,39 @@ Engine bump (`third_party/inferno` → pyre `f6ec19c`, master): GPU milestone-0 
   drives use `file.locking=off` because `/sdcard` is FUSE. The root disk can
   be qcow2 (from `package_vm.py`) so only used blocks are transferred.
 
+## Display screen: border, edge swipes, button bar
+
+Android keeps its own edge gestures (back on the left/right edges, home from the
+bottom, notifications from the top) even in immersive mode, so a guest edge
+swipe started on the physical edge never reaches the VM. Settings → **Display**
+(app-wide, `SharedPreferences` `display_settings`, read when the display opens):
+
+- **Border around the guest screen** (default on): the guest framebuffer is drawn
+  inset by a black border, aspect ratio kept. The border is the app's touch area.
+  **Border width** 0–64 dp; empty = automatic = the widest
+  `WindowInsets.Type.systemGestures()` / `mandatorySystemGestures()` inset, at
+  least 24 dp.
+- **Edge swipes go to the guest** (default on): a touch starting in the border, or
+  within 24 dp inside the guest image, is delivered as starting exactly on the
+  nearest guest edge (each axis on its own); the finger's later moves keep that
+  offset, clamped to the guest area. Swipe up from the bottom border = iOS home
+  swipe; down from the top-right corner = Control Center. The left/right edges
+  also get `View.setSystemGestureExclusionRects` (Android honours at most 200 dp
+  per edge, so the middle 200 dp).
+- **Hardware buttons bar** (Vol−/Vol+/Home/Apps/Power): Always, **Auto-hide**
+  (default: hidden; a tap on the border or a two-finger tap shows it, it hides 3 s
+  after the last press), or Never. Hidden, the guest screen takes the space.
+
+The mapping is the pure `EdgeMap` (`fit`, `startOffset`, `map`; unit tests in
+`app/src/test/.../EdgeMapTest.kt`); `EdgeInput` applies it to `MotionEvent`s for
+both `ScreenView` (RFB/QMP touch) and `SurfaceScreen` (Surface backends).
+
+Android limit: an app can't fully disable the system home gesture (exclusion
+rects are ignored on the bottom edge, and the home gesture still wins from the
+physical edge). To block home and recents, use **App pinning** (Android
+Settings → Security & privacy → More security settings → App pinning) and pin
+the display screen.
+
 ## Findings worth knowing
 
 * **IPSW compatibility comes from source, not guesswork.**

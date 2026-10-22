@@ -143,6 +143,7 @@ class MainActivity : Activity() {
         buildStatusCard(root)
         buildStorageCard(root)
         buildSettingsCard(root)
+        buildDisplayCard(root)
         buildDiagnosticsCard(root)
         fillForm(install.settings)
 
@@ -543,6 +544,61 @@ class MainActivity : Activity() {
                 s.backend != d.backend || s.security != d.security || s.extraArgs != d.extraArgs ||
                 s.avfDisplay != d.avfDisplay || devSession,
         )
+    }
+
+    /** Settings → Display: app-wide, saved as soon as they change (read when the display opens). */
+    private fun buildDisplayCard(root: LinearLayout) {
+        var p = DisplayPrefs.load(this)
+        val card = ui.card(root, "Display", "How the guest screen is shown. For every install.")
+        fun save(next: DisplayPrefs) { p = next; p.save(this) }
+        val border = switch(
+            card, "Border around the guest screen",
+            "A black frame the app owns, so swipes can start outside Android's own edge gestures.", p.border,
+        )
+        val width = ui.field(
+            card, "Border width", if (p.borderDp == DisplayPrefs.AUTO) "" else p.borderDp.toString(), suffix = "dp",
+            help = "0–${DisplayPrefs.MAX_DP}. Empty = automatic: Android's gesture area, at least ${DisplayPrefs.MIN_AUTO_DP} dp.",
+        ).apply { hint = "auto" }
+        border.setOnCheckedChangeListener { _, on -> save(p.copy(border = on)); width.isEnabled = on }
+        width.isEnabled = p.border
+        width.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(e: Editable?) {
+                val dp = e.toString().trim().toIntOrNull()?.coerceIn(0, DisplayPrefs.MAX_DP) ?: DisplayPrefs.AUTO
+                save(p.copy(borderDp = dp))
+            }
+        })
+        val snap = switch(
+            card, "Edge swipes go to the guest",
+            "A touch starting in the border, or within ${DisplayPrefs.SNAP_DP} dp of the screen's edge, starts " +
+                "exactly on the guest's edge: swipe up from the bottom, down from the top-right corner.", p.snap,
+        )
+        snap.setOnCheckedChangeListener { _, on -> save(p.copy(snap = on)) }
+
+        card.addView(ui.text(14f, Ui.TEXT, bold = true).apply { text = "Hardware buttons bar" }, ui.lp(top = 20))
+        val group = RadioGroup(this).also { card.addView(it, ui.lp(top = 4)) }
+        // Generated ids: the settings card's radio buttons use 1..n, and duplicate ids mix up saved view state.
+        val ids = DisplayPrefs.BarMode.entries.associateWith { View.generateViewId() }
+        for ((m, viewId) in ids) {
+            group.addView(RadioButton(this).apply {
+                id = viewId
+                text = m.label
+                setTextColor(Ui.TEXT)
+                buttonTintList = ColorStateList.valueOf(ui.accent)
+                isSaveEnabled = false
+            })
+        }
+        group.check(ids.getValue(p.bar))
+        group.setOnCheckedChangeListener { _, id ->
+            ids.entries.firstOrNull { it.value == id }?.let { save(p.copy(bar = it.key)) }
+        }
+        card.addView(ui.text(12.5f, Ui.MUTED).apply {
+            text = "Vol −, Vol +, Home, Apps and Power under the guest screen. Auto-hide: hidden until you tap the " +
+                "border or tap with two fingers, and hidden again 3 s after the last press. Hidden, the guest " +
+                "screen uses the space. Android's home gesture can't be turned off by an app: pin the app " +
+                "(Settings → Security → App pinning) to block home and recents."
+        }, ui.lp(top = 4))
     }
 
     private fun buildDiagnosticsCard(root: LinearLayout) {

@@ -20,6 +20,10 @@ class ScreenView(context: Context) : View(context), VmDisplay.Listener {
     var client: VmDisplay? = null
     var touch: VmTouch? = null
     var onDisconnect: ((Throwable?) -> Unit)? = null
+    val edge = EdgeInput(this)
+    /** Black border (px) the guest image is inset by; touches there go to [edge]. */
+    var border = 0
+        set(value) { if (field != value) { field = value; invalidate() } }
 
     private val lock = Any()
     private var bitmap: Bitmap? = null
@@ -73,12 +77,11 @@ class ScreenView(context: Context) : View(context), VmDisplay.Listener {
 
     private fun computeDest() {
         if (fbW == 0 || fbH == 0) return
-        val scale = minOf(width.toFloat() / fbW, height.toFloat() / fbH)
-        val w = (fbW * scale).toInt()
-        val h = (fbH * scale).toInt()
-        val left = (width - w) / 2
-        val top = (height - h) / 2
-        dest.set(left, top, left + w, top + h)
+        val b = EdgeMap.fit(width, height, border, fbW, fbH)
+        if (b.left != dest.left || b.top != dest.top || b.right != dest.right || b.bottom != dest.bottom) {
+            dest.set(b.left, b.top, b.right, b.bottom)
+            edge.excludeSideEdges(dest)
+        }
     }
 
     /** Pointer id held in each multitouch slot, or -1. */
@@ -93,21 +96,27 @@ class ScreenView(context: Context) : View(context), VmDisplay.Listener {
         val c = client ?: return false
         if (dest.isEmpty) return false
         if (event.actionMasked == MotionEvent.ACTION_DOWN) multiTouch = touch?.available == true
-        val t = touch
-        if (multiTouch && t != null) {
-            t.send(contacts(event))
+        // In guest-image coordinates, edge swipes snapped onto the edge.
+        val e = edge.map(event, dest)
+        try {
+            val t = touch
+            if (multiTouch && t != null) {
+                t.send(contacts(e))
+                return true
+            }
+            val x = (e.x * fbW / dest.width()).toInt().coerceIn(0, fbW - 1)
+            val y = (e.y * fbH / dest.height()).toInt().coerceIn(0, fbH - 1)
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> c.pointer(x, y, pressed = true)
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> c.pointer(x, y, pressed = false)
+            }
             return true
+        } finally {
+            e.recycle()
         }
-        val x = ((event.x - dest.left) * fbW / dest.width()).toInt()
-        val y = ((event.y - dest.top) * fbH / dest.height()).toInt()
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> c.pointer(x, y, pressed = true)
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> c.pointer(x, y, pressed = false)
-        }
-        return true
     }
 
-    /** The contacts [event] changes, in QEMU's absolute axis range. */
+    /** The contacts [event] (in guest-image coordinates) changes, in QEMU's absolute axis range. */
     private fun contacts(event: MotionEvent): List<VmTouch.Event> {
         val out = ArrayList<VmTouch.Event>(event.pointerCount)
         fun emit(type: VmTouch.Type, index: Int) {
@@ -122,8 +131,8 @@ class ScreenView(context: Context) : View(context), VmDisplay.Listener {
             } else if (slot < 0) {
                 return
             }
-            val x = ((event.getX(index) - dest.left) * VmTouch.MAX / dest.width()).toInt()
-            val y = ((event.getY(index) - dest.top) * VmTouch.MAX / dest.height()).toInt()
+            val x = (event.getX(index) * VmTouch.MAX / dest.width()).toInt()
+            val y = (event.getY(index) * VmTouch.MAX / dest.height()).toInt()
             out += VmTouch.Event(type, slot, slotTracking[slot], x.coerceIn(0, VmTouch.MAX), y.coerceIn(0, VmTouch.MAX))
             if (type == VmTouch.Type.END || type == VmTouch.Type.CANCEL) slotPointer[slot] = -1
         }
