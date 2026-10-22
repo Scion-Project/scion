@@ -1,6 +1,7 @@
 package io.github.dylanneve1.iosonpixel
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import io.github.dylanneve1.iosonpixel.rfb.RfbClient
 import java.io.File
 import java.io.FileWriter
@@ -54,7 +55,9 @@ class QemuBackend(ctx: Context) : VmBackend {
         paths.monitorSocket.delete()
         paths.qmpSocket.delete()
 
-        val cmd = QemuCommand.build(paths, vm, settings)
+        val extra = QemuCommand.extraArgs(app)
+        if (extra.isNotEmpty()) log("debug: ${extra.size} extra QEMU args appended from files/qemu-extra-args.txt")
+        val cmd = QemuCommand.build(paths, vm, settings) + extra
         log("$ " + cmd.joinToString(" "))
 
         if (settings.inProcess) {
@@ -155,6 +158,17 @@ class QemuBackend(ctx: Context) : VmBackend {
 }
 
 object QemuCommand {
+    /**
+     * Debug hook: whitespace-separated tokens from files/qemu-extra-args.txt (no quoting, no
+     * comments), appended to the command line. Debuggable builds only; release builds ignore it.
+     */
+    fun extraArgs(ctx: Context): List<String> {
+        if ((ctx.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) == 0) return emptyList()
+        val f = File(ctx.filesDir, "qemu-extra-args.txt")
+        if (!f.isFile) return emptyList()
+        return runCatching { f.readText().split(Regex("\\s+")).filter { it.isNotEmpty() } }.getOrDefault(emptyList())
+    }
+
     /** Mirrors the sample command from the Inferno guide, minus host-only display flags. */
     fun build(paths: AppPaths, vm: VmLayout, s: VmSettings): List<String> {
         fun path(key: String) = vm.file(key)!!.absolutePath
