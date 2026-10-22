@@ -1,5 +1,5 @@
 [submodule "third_party/inferno"]
 	path = third_party/inferno
-	url = https://github.com/dylanneve1/Inferno.git
+	url = https://github.com/dylanneve1/pyre.git
 	shallow = true
 	branch = master
