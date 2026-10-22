@@ -32,7 +32,7 @@ import java.util.zip.ZipOutputStream
  * What goes in is an explicit list of text: logs, the QEMU command line,
  * settings, device/CPU/memory/storage facts, and the VM folder's *file names
  * and sizes*. Nothing inside the VM folder is ever opened except
- * vm.properties (which only names files), so disk images, kernels and
+ * vm.properties and avf.properties (which only name files), so disk images, kernels and
  * firmware can't end up in the bundle.
  */
 object DebugBundle {
@@ -174,8 +174,10 @@ object DebugBundle {
         appendLine("build: ${Build.FINGERPRINT} (${Build.TYPE})")
         appendLine("kernel: ${System.getProperty("os.version")}")
         appendLine("abis: ${Build.SUPPORTED_ABIS.joinToString()}")
-        val avf = AvfSupport.check(app)
-        appendLine("avf: feature=${avf.hasFeature} manage_permission=${avf.hasPermission}")
+        appendLine("avf:")
+        runCatching { AvfSupport.checks(app) }
+            .onSuccess { list -> list.forEach { appendLine("  ${if (it.ok) "ok  " else "FAIL"} ${it.text.lineSequence().first()}") } }
+            .onFailure { appendLine("  (failed: $it)") }
         appendLine()
         appendLine("vm status: ${VmState.status.name.lowercase()}")
         appendLine("last exit code (this process): ${VmState.lastExit ?: "n/a"}")
@@ -218,15 +220,18 @@ object DebugBundle {
     private fun vmFolder(paths: AppPaths): String = buildString {
         val dir = paths.vmDir
         appendLine("folder: ${dir.absolutePath} (${if (paths.vmInternal) "internal app storage" else "shared storage"})")
-        val manifest = File(dir, VmLayout.MANIFEST)
-        appendLine()
-        appendLine("${VmLayout.MANIFEST}:")
-        if (manifest.isFile) {
-            java.util.Properties().apply { manifest.inputStream().use { load(it) } }
-                .entries.map { it.key.toString() to it.value.toString() }.sortedBy { it.first }
-                .forEach { (k, v) -> appendLine("  $k = $v") }
-        } else {
-            appendLine("  (missing)")
+        // Both only name files (and AVF's kernel command line).
+        for (name in listOf(VmLayout.MANIFEST, AvfLayout.MANIFEST)) {
+            val manifest = File(dir, name)
+            appendLine()
+            appendLine("$name:")
+            if (manifest.isFile) {
+                java.util.Properties().apply { manifest.inputStream().use { load(it) } }
+                    .entries.map { it.key.toString() to it.value.toString() }.sortedBy { it.first }
+                    .forEach { (k, v) -> appendLine("  $k = $v") }
+            } else {
+                appendLine("  (missing)")
+            }
         }
         appendLine()
         val vm = VmLayout(dir)
@@ -298,7 +303,8 @@ object DebugBundle {
         Deliberately NOT included: disk images, kernels, device trees, firmware,
         SEP ROM/NVRAM or any other file from the VM folder. vm-folder.txt lists
         their names and sizes only. QEMU's -serial stdio output (the guest
-        serial console) is part of qemu.log. Logs longer than ${MAX_LOG_BYTES / 1024 / 1024} MiB keep only
+        serial console) is part of qemu.log; an AVF guest's console is
+        logs/avf-console.log. Logs longer than ${MAX_LOG_BYTES / 1024 / 1024} MiB keep only
         their tail.
     """.trimIndent() + "\n"
 

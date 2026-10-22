@@ -1,15 +1,16 @@
 package io.github.dylanneve1.iosonpixel
 
 import android.content.Context
-import android.content.pm.PackageManager
+import android.view.MotionEvent
 import android.view.Surface
+import java.io.File
 
 /**
  * The engine that runs the guest. VmService, MainActivity and DisplayActivity
  * only talk to this; which implementation they get is [VmSettings.backend].
  *
- * Today only [QemuBackend] exists. AVF (hardware virtualization) is developed
- * in ios-on-pixel-avf and plugs in here once it boots something.
+ * [QemuBackend] emulates the iPhone in software; [AvfBackend] runs a custom
+ * kernel under the Android Virtualization Framework (pKVM), see ios-on-pixel-avf.
  */
 interface VmBackend {
     val kind: Backend
@@ -25,6 +26,9 @@ interface VmBackend {
      * launch failed (the reason has been logged).
      */
     fun start(settings: VmSettings, log: (String) -> Unit): Instance?
+
+    /** False if the guest has no display at all, so the UI shouldn't offer one. */
+    val hasDisplay: Boolean get() = true
 
     /** A framebuffer + pointer connection to the running guest, not yet started. */
     fun openDisplay(listener: VmDisplay.Listener): VmDisplay
@@ -55,10 +59,10 @@ interface VmBackend {
     data class Check(val ok: Boolean, val text: String)
 
     companion object {
-        fun create(ctx: Context, kind: Backend): VmBackend = when (kind) {
-            Backend.QEMU -> QemuBackend(ctx)
-            // Not selectable yet (see Backend.implemented); VmSettings.load never returns it.
-            Backend.AVF -> QemuBackend(ctx)
+        /** [vmDir] overrides the VM folder in use (the debug-build developer hook). */
+        fun create(ctx: Context, kind: Backend, vmDir: File? = null): VmBackend = when (kind) {
+            Backend.QEMU -> QemuBackend(ctx, vmDir)
+            Backend.AVF -> AvfBackend(ctx, vmDir)
         }
 
         fun current(ctx: Context): VmBackend = create(ctx, VmSettings.load(ctx).backend)
@@ -68,8 +72,8 @@ interface VmBackend {
 enum class Backend(val id: String, val label: String, val implemented: Boolean) {
     /** Inferno build bundled as libqemu-system-aarch64.so; software CPU emulation. */
     QEMU("qemu", "QEMU", true),
-    /** Android Virtualization Framework (pKVM/crosvm); see ios-on-pixel-avf. */
-    AVF("avf", "AVF", false);
+    /** Android Virtualization Framework (pKVM/crosvm), custom kernel; see ios-on-pixel-avf. */
+    AVF("avf", "AVF", true);
 
     companion object {
         fun fromId(id: String?): Backend? = entries.firstOrNull { it.id == id }
@@ -110,6 +114,12 @@ interface SurfaceDisplay {
 
     /** Press or release a key, by QEMU key name (as for the monitor's sendkey). */
     fun key(name: String, down: Boolean)
+
+    /**
+     * The whole [event] (every pointer, for multi-touch) in a [w] x [h] area covering the
+     * framebuffer. Return false to get [touch] for the first pointer instead.
+     */
+    fun motion(event: MotionEvent, w: Int, h: Int): Boolean = false
 }
 
 /**
@@ -143,21 +153,3 @@ interface VmTouch {
 
 /** The iPhone's physical buttons. */
 enum class HardwareButton { POWER, HOME, VOLUME_DOWN, VOLUME_UP, RINGER }
-
-/**
- * What the device offers for the AVF backend. Read-only: nothing here starts
- * a VM. MANAGE_VIRTUAL_MACHINE is a development permission, granted with
- * `adb shell pm grant <pkg> android.permission.MANAGE_VIRTUAL_MACHINE`.
- */
-data class AvfSupport(val hasFeature: Boolean, val hasPermission: Boolean) {
-    companion object {
-        /** PackageManager.FEATURE_VIRTUALIZATION_FRAMEWORK (API 34); spelled out for minSdk 31. */
-        const val FEATURE = "android.software.virtualization_framework"
-        const val PERMISSION = "android.permission.MANAGE_VIRTUAL_MACHINE"
-
-        fun check(ctx: Context) = AvfSupport(
-            hasFeature = ctx.packageManager.hasSystemFeature(FEATURE),
-            hasPermission = ctx.checkSelfPermission(PERMISSION) == PackageManager.PERMISSION_GRANTED,
-        )
-    }
-}

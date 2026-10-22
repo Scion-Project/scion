@@ -85,6 +85,7 @@ class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
     }
 
     private fun touch(v: View, e: MotionEvent): Boolean {
+        if (display.motion(e, v.width, v.height)) return true
         val down = when (e.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> true
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> false
