@@ -75,7 +75,7 @@ class InstallMigrationTest {
         val (i2, s2) = InstallMigration.dirsFor(files, shared.parentFile!!, "2")
         val b = Install(
             id = "2", name = "iOS 16.5 (AVF)", internalDir = i2.path, sharedDir = s2.path, internal = true,
-            settings = VmSettings(ramGb = 3, smp = 1, backend = Backend.AVF, security = Security.FULL, extraArgs = "debug=0x8 -v"),
+            settings = VmSettings(ramGb = 3, smp = 1, backend = Backend.AVF, security = Security.FULL, extraArgs = "debug=0x8 -v", avfDisplay = true),
         )
         val decoded = InstallMigration.decode(InstallMigration.encode(listOf(a, b)))
         assertEquals(listOf(a, b), decoded)
@@ -114,5 +114,24 @@ class InstallMigrationTest {
         assertEquals(2, synced.single().settings.smp)
         assertEquals(false, synced.single().settings.inProcess)
         assertEquals(vm.absolutePath, synced.single().dir.absolutePath)
+    }
+
+    @Test fun avfDisplayIsPerInstallAndNeverTriggersOrLosesAResync() {
+        val (_, vm, shared) = fakeApp()
+        val legacy = InstallMigration.Legacy(userSettings, true, vm, shared)
+        // What a build without the setting stored as its fingerprint.
+        val oldSeen = org.json.JSONObject(InstallMigration.seen(userSettings, true)).toString()
+        assertTrue(!oldSeen.contains("avf_display"))
+        val on = listOf(InstallMigration.fromLegacy(legacy).let { it.copy(settings = it.settings.copy(avfDisplay = true)) })
+        // Turning it on changes nothing the old preferences know about: no resync.
+        assertEquals(oldSeen, InstallMigration.seen(on.single().settings, true))
+        assertNull(InstallMigration.resync(on, legacy, oldSeen))
+        // A real resync (an older build changed smp) keeps the install's own setting.
+        val synced = InstallMigration.resync(on, legacy.copy(settings = userSettings.copy(smp = 2)), oldSeen)!!
+        assertEquals(2, synced.single().settings.smp)
+        assertEquals(true, synced.single().settings.avfDisplay)
+        // Lists written before the setting existed decode with it off.
+        val raw = """[{"id":"1","name":"n","internal_dir":"/a","shared_dir":"/b","internal":true,"settings":{"backend":"avf"}}]"""
+        assertEquals(false, InstallMigration.decode(raw)!!.single().settings.avfDisplay)
     }
 }

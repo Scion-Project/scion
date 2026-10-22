@@ -62,6 +62,7 @@ class MainActivity : Activity() {
     private lateinit var pinning: TextView
     private lateinit var splitWx: Switch
     private lateinit var inProcess: Switch
+    private lateinit var avfDisplay: Switch
     private lateinit var backendGroup: RadioGroup
     private lateinit var securityGroup: RadioGroup
     private lateinit var avfInfo: TextView
@@ -439,6 +440,18 @@ class MainActivity : Activity() {
             render()
         }
         avfInfo = ui.text(12.5f, Ui.MUTED, selectable = true).also { advanced.addView(it, ui.lp(top = 4)) }
+        avfDisplay = switch(
+            advanced, "Experimental AVF display",
+            "AVF only: the guest's screen and touch in the display, through a framebuffer shared with the VM. " +
+                "Needs a wider hidden-API exemption (see the checks). Off: console only.", s.avfDisplay,
+        )
+        // The checks and the display button depend on it, so apply it right away.
+        avfDisplay.setOnCheckedChangeListener { _, _ ->
+            if (filling) return@setOnCheckedChangeListener
+            saveSettings()
+            backend = VmBackend.create(this, install)
+            render()
+        }
 
         advanced.addView(ui.text(14f, Ui.TEXT, bold = true).apply { text = "Guest security" }, ui.lp(top = 20))
         securityGroup = RadioGroup(this).also { advanced.addView(it, ui.lp(top = 4)) }
@@ -467,6 +480,7 @@ class MainActivity : Activity() {
         affinity.setText(s.vcpuAffinity)
         splitWx.isChecked = s.splitWx
         inProcess.isChecked = s.inProcess
+        avfDisplay.isChecked = s.avfDisplay
         extraArgs.setText(s.extraArgs)
         backendGroup.check(s.backend.ordinal + 1)
         securityGroup.check(s.security.ordinal + 1)
@@ -476,7 +490,8 @@ class MainActivity : Activity() {
         val d = VmSettings()
         setAdvancedShown(
             s.vcpuAffinity != d.vcpuAffinity || s.splitWx != d.splitWx || s.inProcess != d.inProcess ||
-                s.backend != d.backend || s.security != d.security || s.extraArgs != d.extraArgs || devSession,
+                s.backend != d.backend || s.security != d.security || s.extraArgs != d.extraArgs ||
+                s.avfDisplay != d.avfDisplay || devSession,
         )
     }
 
@@ -564,7 +579,7 @@ class MainActivity : Activity() {
         }
         subtitle.text = install.name + " · " + backendLabel(install.backend) + if (devSession) " · developer session" else ""
         avfInfo.text = "AVF needs a one-time adb setup; with AVF selected, the checks above show what's missing.\n" +
-            AvfSupport.checks(this).joinToString("\n") { (if (it.ok) "✓ " else "✗ ") + it.text.lineSequence().first() }
+            AvfSupport.checks(this, install.settings.avfDisplay).joinToString("\n") { (if (it.ok) "✓ " else "✗ ") + it.text.lineSequence().first() }
 
         val st = VmState.status
         // The exit code and notice belong to the install that ran.
@@ -590,7 +605,7 @@ class MainActivity : Activity() {
         statusDetail.visibility = if (statusDetail.text.isEmpty()) View.GONE else View.VISIBLE
 
         val list = backend.checks()
-        val failing = list.count { !it.ok }
+        val failing = list.count { !it.ok && it.blocking }
         checksSummary.text = if (failing == 0) "Ready to start" else
             "$failing ${if (failing == 1) "thing needs" else "things need"} fixing before you can start"
         checksSummary.setTextColor(if (failing == 0) Ui.GOOD else Ui.TEXT)
@@ -687,6 +702,7 @@ class MainActivity : Activity() {
             backend = Backend.entries.firstOrNull { it.ordinal + 1 == backendGroup.checkedRadioButtonId } ?: d.backend,
             security = Security.entries.firstOrNull { it.ordinal + 1 == securityGroup.checkedRadioButtonId } ?: d.security,
             extraArgs = extraArgs.text.toString().trim(),
+            avfDisplay = avfDisplay.isChecked,
         )
     }
 
