@@ -91,7 +91,8 @@ class MainActivity : Activity() {
      */
     private var devBackend: Backend? = null
     private var devVmDir: File? = null
-    private val devSession get() = devBackend != null || devVmDir != null
+    private var devAvfDisplay: Boolean? = null
+    private val devSession get() = devBackend != null || devVmDir != null || devAvfDisplay != null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -101,6 +102,7 @@ class MainActivity : Activity() {
         if (debuggable) {
             devBackend = intent.getStringExtra(VmService.EXTRA_BACKEND)?.let { Backend.fromId(it) }
             devVmDir = intent.getStringExtra(VmService.EXTRA_VM_DIR)?.let { File(it) }
+            if (intent.hasExtra(VmService.EXTRA_AVF_DISPLAY)) devAvfDisplay = intent.getBooleanExtra(VmService.EXTRA_AVF_DISPLAY, false)
         }
         // The first call migrates the single-VM app into install 1 (see InstallMigration).
         loadInstall()
@@ -159,7 +161,7 @@ class MainActivity : Activity() {
             Thread({ StorageBench.run(applicationContext, mb) }, "storage-bench").start()
         }
         // Run a backend / VM folder for this session only, nothing saved; `start` presses Start:
-        //   adb shell am start -n <pkg>/.MainActivity --es backend avf --es vm_dir <dir> --ez start true
+        //   adb shell am start -n <pkg>/.MainActivity --es backend avf --es vm_dir <dir> [--ez avf_display true] --ez start true
         if (devSession) VmState.addLine("note: developer session: ${backend.kind.label}, VM folder ${install.dir}" +
             "; settings are not saved")
         if (debuggable && savedInstanceState == null && intent.getBooleanExtra(EXTRA_START, false)) {
@@ -170,7 +172,7 @@ class MainActivity : Activity() {
     /** (Re)reads the selected install and makes its backend. */
     private fun loadInstall() {
         val selected = Installs.current(this)
-        install = if (devSession) Installs.developer(selected, devBackend, devVmDir) else selected
+        install = if (devSession) Installs.developer(selected, devBackend, devVmDir, devAvfDisplay) else selected
         backend = VmBackend.create(this, install)
         // The app creates the shared folder itself, so files adb pushes into it stay readable to the app.
         if (!devSession) File(install.sharedDir).mkdirs()
@@ -432,7 +434,7 @@ class MainActivity : Activity() {
             if (filling) return@setOnCheckedChangeListener
             if (devSession) {
                 devBackend = formSettings().backend
-                install = Installs.developer(Installs.current(this), devBackend, devVmDir)
+                install = Installs.developer(Installs.current(this), devBackend, devVmDir, devAvfDisplay)
             } else {
                 saveSettings()
             }
@@ -446,9 +448,14 @@ class MainActivity : Activity() {
                 "Needs a wider hidden-API exemption (see the checks). Off: console only.", s.avfDisplay,
         )
         // The checks and the display button depend on it, so apply it right away.
-        avfDisplay.setOnCheckedChangeListener { _, _ ->
+        avfDisplay.setOnCheckedChangeListener { _, checked ->
             if (filling) return@setOnCheckedChangeListener
-            saveSettings()
+            if (devSession) {
+                devAvfDisplay = checked
+                install = Installs.developer(Installs.current(this), devBackend, devVmDir, devAvfDisplay)
+            } else {
+                saveSettings()
+            }
             backend = VmBackend.create(this, install)
             render()
         }
@@ -685,7 +692,7 @@ class MainActivity : Activity() {
 
     private fun startVm() {
         saveSettings()
-        VmService.start(this, if (devSession) Installs.current(this) else install, devBackend, devVmDir)
+        VmService.start(this, if (devSession) Installs.current(this) else install, devBackend, devVmDir, devAvfDisplay)
         if (backend.hasDisplay) openDisplay()
     }
 
