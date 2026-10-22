@@ -172,6 +172,9 @@ needed three more things beyond the above:
 * **bionic incompatibilities found so far:** `shm_open` (now uses
   `memfd_create`), and 9p's use of `st_atime_nsec` (bionic macro; fixed with
   `--disable-virtfs`). Expect more at runtime rather than compile time.
+* **Two TCG speed-ups are on by default and can be turned off for comparison:**
+  `-accel tcg,native-fp=off` (guest FP on softfloat instead of the host FPU) and
+  `-accel tcg,asid-tlbs=0` (drop TLBs on every ASID switch, the old behaviour).
 * **Host toolchain gotcha on this Mac:** macOS 27 updated the Command Line
   Tools SDK, but `xcode-select` points at Xcode 26.0, whose linker can't read
   the new SDK's `.tbd` files. `build-android.sh` probes for a working host
