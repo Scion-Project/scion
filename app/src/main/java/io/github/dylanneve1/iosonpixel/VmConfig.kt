@@ -97,6 +97,12 @@ data class VmSettings(
      * to the AVF guest's kernel command line.
      */
     val extraArgs: String = "",
+    /**
+     * AVF only, experimental: the guest's screen (a shared framebuffer) and touch in the display
+     * ([io.github.dylanneve1.iosonpixel.avf.ScfbIo]). Off: console only, as before. Per install
+     * only; the single-VM app's preferences never had it, so [save] and [load] leave it out.
+     */
+    val avfDisplay: Boolean = false,
 ) {
     /** [extraArgs] as tokens. */
     val extraArgList: List<String> get() = extraArgs.split(Regex("\\s+")).filter { it.isNotEmpty() }

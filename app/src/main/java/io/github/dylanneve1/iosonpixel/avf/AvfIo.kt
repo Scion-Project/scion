@@ -6,13 +6,8 @@ import io.github.dylanneve1.iosonpixel.SurfaceDisplay
 
 /**
  * Display and input for an AVF guest: the seam between [io.github.dylanneve1.iosonpixel.AvfBackend]
- * and whatever drives the guest's screen, touch and keys. Only [None] (headless) exists so far.
- *
- * What AVF offers a custom VM is still being mapped (all `@hide`, so behind [AvfApi.EXEMPTIONS]):
- * on the image builder, `setDisplayConfig`/`setGpuConfig` (virtio-gpu + crosvm's Android display)
- * and `useTouch`/`useKeyboard`/`useSwitches` (virtio-input); at run time the crosvm display
- * service's `setSurface`, and `VirtualMachine.sendKeyEvent`/`sendMultiTouchEvent`/`sendSwitchEvent`.
- * An implementation of this interface is where that goes; the backend and UI won't need to change.
+ * and whatever drives the guest's screen, touch and keys. [None] is headless (console only);
+ * [ScfbIo] is the experimental shared-framebuffer display with multi-touch.
  *
  * Per run, AvfBackend calls, in order:
  *  1. [configure], before the VM config is built: ask for devices on the image builder;
@@ -23,7 +18,14 @@ interface AvfIo {
     /** True if [attach] will return a [Screen]; the UI only offers the display when it does. */
     val hasDisplay: Boolean
 
-    fun configure(image: AvfApi.ImageBuilder, log: (String) -> Unit)
+    /**
+     * True once [configure] has added display devices to this run's VM (and nothing refused
+     * them). If such a VM stops right after `run()`, AvfBackend boots it again console-only.
+     */
+    val configured: Boolean get() = false
+
+    /** [memoryBytes] is the guest's RAM, for devices that live in it. */
+    fun configure(image: AvfApi.ImageBuilder, memoryBytes: Long, log: (String) -> Unit)
 
     fun attach(vm: AvfApi.Vm, log: (String) -> Unit): Screen?
 
@@ -44,7 +46,7 @@ interface AvfIo {
     /** No display or input devices: console only. */
     object None : AvfIo {
         override val hasDisplay = false
-        override fun configure(image: AvfApi.ImageBuilder, log: (String) -> Unit) = Unit
+        override fun configure(image: AvfApi.ImageBuilder, memoryBytes: Long, log: (String) -> Unit) = Unit
         override fun attach(vm: AvfApi.Vm, log: (String) -> Unit): Screen? = null
         override fun detach() = Unit
     }
