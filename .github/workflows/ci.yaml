@@ -1,4 +1,4 @@
-# GitHub Actions CI for ios-on-pixel.
+# GitHub Actions CI for Scion.
 #
 # What it does on every push / PR:
 #   * full-build    : (macOS) cross-compiles the static deps + the Inferno QEMU

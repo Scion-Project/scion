@@ -151,7 +151,7 @@ object DebugBundle {
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "application/zip"
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "iOS on Pixel debug bundle (${file.name})")
+            putExtra(Intent.EXTRA_SUBJECT, "Scion debug bundle (${file.name})")
             clipData = ClipData.newRawUri(file.name, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
@@ -290,7 +290,7 @@ object DebugBundle {
     }
 
     private fun readme(names: List<String>) = """
-        iOS on Pixel debug bundle, generated ${now()}.
+        Scion debug bundle, generated ${now()}.
 
         Contents:
         ${names.joinToString("\n        ") { "- $it" }}
