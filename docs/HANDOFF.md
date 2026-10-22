@@ -105,6 +105,21 @@ needed three more things beyond the above:
    Android's cpusets may narrow the mask when the app is in the background;
    watch for its `warn_report`.
 
+## Developer hooks (debuggable builds only)
+
+* `--ez attach true` on `.MainActivity` opens the viewer (see "Not yet verified").
+* **Extra QEMU arguments.** If `files/qemu-extra-args.txt` exists in the app's
+  internal files dir, its whitespace-separated tokens (newlines count; no
+  quoting or comments) are appended to the end of the QEMU command line, and the
+  run log notes it. Release builds ignore the file.
+  ```sh
+  adb shell run-as <pkg> sh -c 'cat > files/qemu-extra-args.txt'   # then type/pipe the args
+  ```
+  Example, SEP diagnostics (engine `docs/SEP-NOTES.md`):
+  ```
+  -trace apple_sep_aess_* -trace apple_sep_ssc_* -trace apple_sep_pka_* -d guest_errors,unimp -D /data/user/0/<pkg>/files/sep-trace.log
+  ```
+
 ## Architecture recap
 
 * **Backends:** the VM engine sits behind `VmBackend` (start/stop, readiness
