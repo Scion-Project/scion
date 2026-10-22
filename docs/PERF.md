@@ -21,6 +21,10 @@ Issue #48. Measured on the Android **emulator** (`sdk_gphone64_arm64`, 8 host co
   than the one above. On the microbenchmarks, an indirect-branch return is 29% cheaper, a
   `TPIDR_EL1` read goes from about 24 ns to under 1 ns, and storage-only system-register
   writes no longer end the TB. See [TCG optimisations](#tcg-optimisations-2026-10-22).
+- **Compiler options (#77, below):** PGO (profile from the restore boot) takes 4.5% off the
+  boot's wall time and host CPU, and 6.4% CPU with ThinLTO. `-O3` and ThinLTO alone are
+  within noise for speed; ThinLTO makes the libraries 11% smaller. All are opt-in
+  (`QEMU_PGO_PROFILE`, `QEMU_LTO`, `QEMU_OPT`, `QEMU_TUNE`); the default build is unchanged.
 
 ## Setup
 
@@ -256,6 +260,109 @@ Estimated benefit is relative to the 13.1 s `-smp 4` boot.
      relaunches QEMU for every boot.
 9. **Kernel time (≈25% of CPU, unprofiled).** Profile on a userdebug or rooted device with
    kernel samples (`cpu-clock` without `:u`) to see page-fault and syscall cost.
+
+## Compiler and linker options (#77)
+
+`native/build-android.sh` has opt-in knobs for how **QEMU's own code** is compiled. The
+static deps always use the default flags. With none of the knobs set, the generated cross
+files are byte-identical to the old ones, so CI and the shipped APK build exactly as before.
+
+| Env | Effect |
+|---|---|
+| `QEMU_OPT=-O3` | `-O` level for QEMU (default `-O2`; it overrides meson's release `-O3`, which comes first on the command line) |
+| `QEMU_TUNE="..."` | CPU flags for QEMU only (default `TUNE_CFLAGS`) |
+| `QEMU_LTO=thin` | ThinLTO, linked by the NDK's lld (`-Db_lto=true -Db_lto_mode=thin`) |
+| `QEMU_PGO_GENERATE=<device dir>` | instrumented build in `native/build/qemu-pgo-gen` that writes `.profraw` files to that directory on the device (atomic counters, because vCPU threads run the same code at once); not installed into the app |
+| `QEMU_PGO_PROFILE=<file.profdata>` | `-fprofile-use` with a merged profile; `native/build-android.sh pgo-merge OUT RAW...` merges with the NDK's `llvm-profdata` |
+
+A build tree reconfigures itself when any of these (or the tuning) change, so switching
+between variants never silently reuses old flags.
+
+### Results (Oct 2026, Inferno `180389d`)
+
+Measured on the emulator (8 Apple-silicon host cores) with `tools/restore_bench.py --smp 4`,
+one run per variant per round, interleaved, 8 rounds, under the shared bench lock. Each
+"base" is the default build in the same batch. Medians:
+
+| Variant | `bsd_root` | `waiting_host` | host CPU (user+sys) | Range, `waiting_host` |
+|---|---|---|---|---|
+| base (`-O2`) | 4.73 s | 20.80 s | 23.09 s | 20.52–21.21 s |
+| `QEMU_OPT=-O3` ¹ | −3.3% | −0.6% | +0.7% | 20.50–20.91 s |
+| `QEMU_LTO=thin` | −4.2% | −1.4% | −1.7% | 20.29–20.91 s |
+| `-O3` + ThinLTO ¹ | −1.6% | −1.5% | −0.8% | 19.98–20.87 s |
+| PGO | −7.3% | **−4.5%** (19.85 s) | **−4.5%** (22.06 s) | 19.51–20.49 s |
+| PGO + ThinLTO | −7.3% | **−5.0%** (19.75 s) | **−6.4%** (21.61 s) | 19.53–20.72 s |
+
+¹ From the first batch (base 20.75 s, 23.05 s CPU); the rest are from the second.
+
+The firmware-free `a13-test` TCG microbenchmarks (Inferno's `hw/arm/tests/tcg_bench.S`:
+proxies for the boot's hot paths; none of them was the PGO training run). Same emulator,
+5 interleaved reps, median QEMU process wall time, change against base:
+
+| Workload | base | `-O3` | ThinLTO | `-O3`+ThinLTO | PGO | PGO+ThinLTO |
+|---|---|---|---|---|---|---|
+| w1 hot BL/RET (jump-cache hits) | 2.79 s | −5.0% | +0.7% | −4.7% | −0.7% | −3.6% |
+| w2 BLR/RET over 4096 targets | 7.67 s | −0.4% | +0.1% | −0.7% | **−10.2%** | **−7.7%** |
+| w3 `MRS TPIDR_EL1` | 7.67 s | +1.4% | 0.0% | −0.8% | +0.1% | +0.3% |
+| w4 ALU loop (control) | 2.82 s | −1.1% | +0.4% | −1.1% | −1.1% | −0.7% |
+| w5 w2 + TB invalidations | 3.01 s | −1.3% | −0.7% | −2.3% | **−9.0%** | **−7.6%** |
+
+Library sizes, stripped, with gzip -6 size in brackets. The APK stores them compressed
+(`useLegacyPackaging`), and the app extracts them on install:
+
+| Variant | `libqemu-system-aarch64.so` | `libqemu-system-aarch64-shared.so` |
+|---|---|---|
+| base | 12.32 MB (3.57) | 12.51 MB (3.58) |
+| `-O3` | 12.64 MB (3.68) | |
+| ThinLTO | 10.92 MB (3.23), −11% | 11.29 MB (3.27), −10% |
+| `-O3` + ThinLTO | 11.22 MB | |
+| PGO | 11.40 MB (3.42) | |
+| PGO + ThinLTO | 10.18 MB (3.14), −17% | |
+
+ThinLTO on both libraries would take about 0.65 MB off the APK (≈6.0 MB) and 2.6 MB off the
+installed size.
+
+Build time (4-core Linux VPS, both QEMU variants): 2:26 base, 2:29 ThinLTO.
+
+**Conclusions.**
+
+- **`-O3` doesn't help the boot.** It is within noise on the restore boot and 2.6% bigger,
+  and of the microbenchmarks it only speeds up w1 (5%).
+- **ThinLTO is neutral to slightly positive for speed (≤2%, within noise) and saves 11% in
+  size.** It boots fine (24 restore boots).
+- **PGO is the only clear speed win**: 4.5% off the restore boot in wall time and CPU, and
+  6.4% CPU with ThinLTO. The ranges barely overlap with base. It also takes 8–10% off the
+  indirect-branch and TB-invalidation microbenchmarks it was not trained on. But the profile was
+  trained on this same restore boot, and it is tied to an Inferno revision (functions that
+  changed lose their profile), so it stays opt-in. A default would need a profile kept in step
+  with the submodule, and training on a normal boot too.
+- Nothing is on by default.
+
+**Tuning for Tensor G5 (untested on target).** The emulator's host is Apple silicon. Its
+guest CPU does have the Armv8.2 + crypto/dotprod/rcpc extensions, so the default
+`-mtune=cortex-x4` binary runs there, but tuning effects measured on it say nothing about
+X4/A725/A520 cores. On a phone, try e.g.
+`QEMU_TUNE="-march=armv8.2-a+crypto+dotprod+rcpc -mtune=cortex-a720"` (NDK r28's clang 19
+has no `cortex-a725`; the A720 is its predecessor) against the default. Keep the Armv8.2
+`-march`: `-mcpu=cortex-x4` would allow Armv9 / SVE2 code. CI's `baseline-build` sets
+`TUNE_CFLAGS=-march=armv8-a`, which `QEMU_TUNE` defaults to, so the x86-hosted emulator still
+gets a plain Armv8.0 binary.
+
+**Making a PGO build.**
+
+```sh
+# instrumented QEMU, a few restore boots on a device, merged profile:
+native/pgo-profile.sh restore.profdata --serial <adb serial> --kernel ... --dtb ... \
+  --trustcache ... --ramdisk ... --sep-rom ... --sep-fw ...
+QEMU_PGO_PROFILE=restore.profdata QEMU_LTO=thin native/build-android.sh qemu
+```
+
+The `.profraw` is written when QEMU exits normally (`restore_bench.py` stops it with
+SIGINT; SIGKILL loses it). The profile above came from 3 `-smp 4` restore boots of the
+instrumented build on the emulator (27–31 s each, versus 21 s). The steps were run by hand:
+build on Linux, boot on the Mac's emulator, merge back on Linux. The profile holds only
+QEMU's branch and call counts, keyed by QEMU function names, so it's no Apple data. Still,
+don't commit one: it goes stale with every Inferno bump.
 
 ## Notes and caveats
 

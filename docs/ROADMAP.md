@@ -24,7 +24,7 @@ Pixel 10 first, so numbers come later.
       `minimum_page_bits = 14`). Then tune `tb-size` and the TLB size.
 - [ ] Try the 16 KB page size kernel (Pixel developer option) so host pages
       match guest pages.
-- [ ] PGO/LTO builds of QEMU using a boot trace as the profile.
+- [x] PGO/LTO builds of QEMU using a boot trace as the profile (opt-in, measured in `docs/PERF.md`, "Compiler and linker options"; not on by default).
 - [ ] Use Android's performance hints (`APerformanceHintManager`) for the
       vCPU threads instead of hard affinity.
 
