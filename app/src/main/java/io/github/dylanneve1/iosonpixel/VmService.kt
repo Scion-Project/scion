@@ -7,11 +7,13 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.ServiceInfo
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import java.io.File
 
 /** Process-wide VM state the activities observe. */
 object VmState {
@@ -67,17 +69,24 @@ class VmService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> stopVm()
-            else -> startVm()
+            else -> startVm(intent)
         }
         return START_NOT_STICKY
     }
 
-    private fun startVm() {
+    private fun startVm(intent: Intent?) {
         if (instance != null) return
         startForeground(NOTIF_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
 
         val settings = VmSettings.load(this)
-        val backend = VmBackend.create(this, settings.backend)
+        // Developer override for this run only (see MainActivity); never saved.
+        val debuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        val kind = intent?.getStringExtra(EXTRA_BACKEND)?.takeIf { debuggable }?.let { Backend.fromId(it) } ?: settings.backend
+        val dir = intent?.getStringExtra(EXTRA_VM_DIR)?.takeIf { debuggable }?.let { File(it) }
+        if (kind != settings.backend || dir != null) {
+            VmState.addLine("note: developer override: backend ${kind.label}" + (dir?.let { ", VM folder $it" } ?: ""))
+        }
+        val backend = VmBackend.create(this, kind, dir)
         val problems = backend.problems() + listOfNotNull(
             "a VM folder import is still running".takeIf { ImportState.running },
         )
@@ -156,9 +165,15 @@ class VmService : Service() {
         private const val CHANNEL = "vm"
         private const val NOTIF_ID = 1
         const val ACTION_STOP = "stop"
+        /** Debuggable builds only: run this backend / VM folder instead of the saved ones. */
+        const val EXTRA_BACKEND = "backend"
+        const val EXTRA_VM_DIR = "vm_dir"
 
-        fun start(ctx: Context) {
-            ctx.startForegroundService(Intent(ctx, VmService::class.java))
+        fun start(ctx: Context, backend: Backend? = null, vmDir: File? = null) {
+            ctx.startForegroundService(Intent(ctx, VmService::class.java).apply {
+                backend?.let { putExtra(EXTRA_BACKEND, it.id) }
+                vmDir?.let { putExtra(EXTRA_VM_DIR, it.absolutePath) }
+            })
         }
 
         fun stop(ctx: Context) {
