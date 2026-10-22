@@ -10,7 +10,7 @@ import java.io.File
  * only talk to this; which implementation they get is [VmSettings.backend].
  *
  * [QemuBackend] emulates the iPhone in software; [AvfBackend] runs a custom
- * kernel under the Android Virtualization Framework (pKVM), see ios-on-pixel-avf.
+ * kernel under the Android Virtualization Framework (pKVM), see scion-avf.
  */
 interface VmBackend {
     val kind: Backend
@@ -72,7 +72,7 @@ interface VmBackend {
 enum class Backend(val id: String, val label: String, val implemented: Boolean) {
     /** Inferno build bundled as libqemu-system-aarch64.so; software CPU emulation. */
     QEMU("qemu", "QEMU", true),
-    /** Android Virtualization Framework (pKVM/crosvm), custom kernel; see ios-on-pixel-avf. */
+    /** Android Virtualization Framework (pKVM/crosvm), custom kernel; see scion-avf. */
     AVF("avf", "AVF", true);
 
     companion object {

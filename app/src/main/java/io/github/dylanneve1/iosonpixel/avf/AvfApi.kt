@@ -21,7 +21,7 @@ class AvfException(message: String, cause: Throwable? = null) : Exception(messag
  * unless `hidden_api_blacklist_exemptions` lists them ([EXEMPTIONS]). Reflection is the only way
  * in for a sideloaded app, and it lets [unreachable] name exactly what the policy refuses.
  *
- * The member set and call order are the AVF probe's (ios-on-pixel-avf, probe/app, Probe.kt),
+ * The member set and call order are the AVF probe's (scion-avf, probe/app, Probe.kt),
  * which booted a custom kernel + initrd this way on a Pixel 10 (Android 17). Resolved once per
  * process ([instance]): an exemption only applies to processes started after it was set.
  */
