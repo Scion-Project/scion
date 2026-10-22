@@ -86,6 +86,8 @@ data class VmSettings(
     val backend: Backend = Backend.QEMU,
     /** Run QEMU as a library in the :vm process instead of as a child process. */
     val inProcess: Boolean = false,
+    /** Guest kernel security level, passed as a boot-arg (AVF backend only). */
+    val security: Security = Security.DEFAULT,
 ) {
     /** What QEMU_VCPU_AFFINITY is set to for this run; empty means no pinning. */
     val effectiveVcpuAffinity: String
@@ -96,6 +98,7 @@ data class VmSettings(
             .putInt("ram_gb", ramGb).putInt("smp", smp).putInt("tb_size_mb", tbSizeMb)
             .putBoolean("split_wx", splitWx).putString("vcpu_affinity", vcpuAffinity)
             .putString("backend", backend.id).putBoolean("in_process", inProcess)
+            .putString("security", security.id)
             .apply()
     }
 
@@ -119,8 +122,37 @@ data class VmSettings(
                     ?.takeIf { it != TensorG5.LEGACY_VCPU_AFFINITY } ?: d.vcpuAffinity,
                 backend = Backend.fromId(p.getString("backend", null))?.takeIf { it.implemented } ?: d.backend,
                 inProcess = p.getBoolean("in_process", d.inProcess),
+                security = Security.fromId(p.getString("security", null)) ?: d.security,
             )
         }
+    }
+}
+
+/**
+ * How much of its security the guest kernel enforces, passed on its command line as
+ * `security=<id>` ([bootArg]). Only the plumbing lives here: what each level turns on or off is
+ * up to the kernel (the XNU port for AVF), and the AVF backend is the only one that passes it.
+ */
+enum class Security(val id: String, val label: String) {
+    /** Everything the kernel can enforce. */
+    FULL("full", "Full"),
+    /** Whatever the kernel needs relaxed to boot while it's being brought up. */
+    BRINGUP("bringup", "Bring-up"),
+    /** No enforcement; for debugging the kernel itself. */
+    OFF("off", "Off");
+
+    val bootArg: String get() = "$BOOT_ARG=$id"
+
+    companion object {
+        const val BOOT_ARG = "security"
+
+        /**
+         * The most secure level the kernel boots with. The kernel doesn't define its levels yet,
+         * so this is [BRINGUP] for now; raise it to [FULL] once a kernel boots with that.
+         */
+        val DEFAULT = BRINGUP
+
+        fun fromId(id: String?): Security? = entries.firstOrNull { it.id == id }
     }
 }
 
@@ -176,6 +208,8 @@ class AppPaths(ctx: Context) {
      */
     val usbUplinkSocket = File(ctx.filesDir, "usb-uplink.sock")
     val logFile = File(ctx.getExternalFilesDir(null), "qemu.log")
+    /** The AVF guest's console (and hvc2 log), next to qemu.log so the debug bundle picks it up. */
+    val avfLogFile = File(ctx.getExternalFilesDir(null), "avf-console.log")
     val tmpDir: File = ctx.cacheDir
 
     companion object {

@@ -218,6 +218,67 @@ With adb you can also read the log directly:
 * **Long runs are untested.** We don't yet know how Android's background
   limits (the phantom-process killer) treat a long boot with the screen off.
   Keep the app or the display in front during the first runs.
-* **AVF (hardware virtualization)** appears on the main screen but can't be
-  selected. That work lives in
+* **AVF (hardware virtualization)** boots a custom kernel, not iOS yet, and has
+  no display. See [AVF backend](#avf-backend-experimental) below and
   [scion-avf](https://github.com/dylanneve1/scion-avf).
+
+## AVF backend (experimental)
+
+**Settings → Advanced → VM backend → AVF** runs the guest as a non-protected
+custom-kernel VM under the Android Virtualization Framework (pKVM + crosvm)
+instead of QEMU. Today that means a Linux-style kernel + initrd with a
+console only: the iOS kernel for AVF is still being ported, and there's no
+display yet. The guest console shows in the app's output view and in
+`Android/data/io.github.dylanneve1.iosonpixel/files/avf-console.log`.
+
+**One-time adb setup.** The main screen lists whatever is missing, with these
+commands:
+
+```sh
+PKG=io.github.dylanneve1.iosonpixel
+adb shell pm grant $PKG android.permission.MANAGE_VIRTUAL_MACHINE
+adb shell pm grant $PKG android.permission.USE_CUSTOM_VIRTUAL_MACHINE
+# The custom-kernel API is @hide. This setting is global (all apps) and applies to
+# processes started after it, hence the force-stop.
+adb shell settings put global hidden_api_blacklist_exemptions \
+  "'Landroid/system/virtualmachine/VirtualMachineCustomImageConfig,Landroid/system/virtualmachine/VirtualMachineConfig\$Builder;->setCustomImageConfig('"
+adb shell am force-stop $PKG
+```
+
+To undo: `adb shell settings delete global hidden_api_blacklist_exemptions`
+and `pm revoke` the two permissions.
+
+**The guest** is described by `avf.properties` in the VM folder, next to
+QEMU's `vm.properties` (so one folder can hold both and share disk images).
+Paths are relative to the folder:
+
+```properties
+kernel=Image              # required
+initrd=initrd.img         # optional
+params=console=hvc0 earlycon=uart8250,mmio,0x3f8 panic=-1   # this is the default
+disk.0=root.img           # optional virtio-blk disks, in order (vda, vdb, ...)
+disk.0.writable=true      # read-only unless set
+memory_mib=2048           # default: the Guest RAM setting
+cpus=host                 # 1 or host; default: 1 if vCPUs is 1, else host
+```
+
+**Guest security** (Settings → Advanced) is appended to the kernel command
+line as `security=full|bringup|off`, replacing any `security=` in `params`.
+The kernel decides what the levels mean. The default is the most secure level
+the kernel boots with; until the kernel defines its levels, that's `bringup`.
+
+Stop is crosvm's hard stop, like pulling the plug: there's no clean-shutdown
+request for custom VMs yet.
+
+**Developer hook (debug builds):** run a backend and folder for one session
+without changing the saved settings, and press Start:
+
+```sh
+adb shell am start -n $PKG/.MainActivity --es backend avf \
+  --es vm_dir /data/user/0/$PKG/files/<folder> --ez start true
+```
+
+Files the app reads must be owned by the app. A folder that `adb shell mkdir`
+created belongs to shell, and the app can't read what's pushed into it. Push
+into a folder the app made (open the app once first), or stream files in with
+`adb exec-in "run-as $PKG sh -c 'cat > files/<folder>/Image'" < Image`.
