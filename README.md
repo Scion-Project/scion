@@ -9,10 +9,21 @@ port of the [Inferno](https://github.com/ChefKissInc/Inferno) QEMU fork.
 > [docs/ETHICS.md](docs/ETHICS.md) for what this project deliberately doesn't
 > do, and [docs/HANDOFF.md](docs/HANDOFF.md) for the current technical state.
 
-> **Status: early work in progress.** The app, the IPSW probe and the
-> Android build pipeline are in place. Booting iOS on the phone has not been
-> tested end to end yet. Expect emulation to be *slow*: every Apple CPU
-> instruction runs through QEMU's TCG JIT, and the guest GPU is software-rendered.
+> **Status (2026-10-22):** two backends.
+> - **QEMU (Pyre):** iOS 14 on an emulated iPhone 11 boots to the home screen. It's slow: every
+>   Apple CPU instruction goes through QEMU's TCG JIT.
+> - **AVF (hardware virtualization):** Apple's open-source XNU (via
+>   [HackiOS](https://github.com/dylanneve1/hackios-xnu-kernel)) runs as a pKVM guest on the
+>   Pixel's own CPU cores, with the iOS 16.5 userland. It reaches the **home screen in about 80 s**.
+>   Touch is still being fixed.
+
+<p>
+<img src="docs/screenshots/avf-ios165-boot.png" width="240" alt="iOS 16.5 booting under AVF on a Pixel 10">
+<img src="docs/screenshots/avf-ios165-home.png" width="240" alt="iOS 16.5 home screen under AVF on a Pixel 10">
+</p>
+
+*iOS 16.5 booting and at the home screen in a pKVM virtual machine on a Pixel 10. The text at the
+bottom is the test app's debug log.*
 
 This project ships **no Apple software**. No IPSWs, keys, firmware, ROMs or
 pre-made disk images, and nothing that downloads or patches them for you. You
