@@ -14,12 +14,16 @@
 #   INFERNO_SRC       Inferno source tree (default: third_party/inferno)
 #   JOBS              parallel jobs
 #
-# Compiler options for QEMU's own code (the deps always use OPT_CFLAGS). See
-# docs/PERF.md, "Compiler and linker options", for what each one measured.
-#   QEMU_OPT          optimisation level (default: -O2)
-#   LTO               thin | off: ThinLTO for QEMU, linked by the NDK's lld (default: off)
-#   PGO_PROFILE       merged .profdata to optimise with (-fprofile-use); see `pgo-merge`
-#   PGO_GENERATE      device directory: build an instrumented QEMU into $WORK/qemu-pgo-gen
+# Compiler options for QEMU's own code, all off by default (the deps always use
+# OPT_CFLAGS). See docs/PERF.md, "Compiler and linker options", for what each
+# one measured. Unset, QEMU is compiled exactly as before (-O2, no LTO, no PGO).
+#   QEMU_OPT          optimisation level (default: -O2; meson's release -O3 is overridden)
+#   QEMU_TUNE         CPU flags for QEMU only (default: TUNE_CFLAGS), e.g.
+#                     "-march=armv8.2-a+crypto+dotprod+rcpc -mtune=cortex-a720" (NDK r28 has no a725)
+#   QEMU_LTO          thin | off: ThinLTO for QEMU, linked by the NDK's lld (default: off)
+#   QEMU_PGO_PROFILE  merged .profdata to optimise with (-fprofile-use); see `pgo-merge`
+#                     and native/pgo-profile.sh
+#   QEMU_PGO_GENERATE device directory: build an instrumented QEMU into $WORK/qemu-pgo-gen
 #                     that writes .profraw files there (not installed into the app)
 # A build tree is reconfigured by itself when these (or the tuning) change.
 #
@@ -46,26 +50,30 @@ TUNE_CFLAGS="${TUNE_CFLAGS:--march=armv8.2-a+crypto+dotprod+rcpc -mtune=cortex-x
 OPT_CFLAGS="-O2 -fPIC -ffunction-sections -fdata-sections $TUNE_CFLAGS"
 
 QEMU_OPT="${QEMU_OPT:--O2}"
-LTO="${LTO:-off}"
-PGO_PROFILE="${PGO_PROFILE:-}"
-PGO_GENERATE="${PGO_GENERATE:-}"
-case "$LTO" in thin|off) ;; *) echo "LTO must be thin or off" >&2; exit 2 ;; esac
-# meson's release buildtype adds -O3, but these come later on the command line and win.
-QEMU_CFLAGS="$QEMU_OPT -fPIC -ffunction-sections -fdata-sections $TUNE_CFLAGS"
-# The -O level on the link line sets lld's LTO optimisation level.
-QEMU_LDFLAGS="$QEMU_OPT"
-if [[ -n "$PGO_GENERATE" ]]; then
+QEMU_TUNE="${QEMU_TUNE:-$TUNE_CFLAGS}"
+QEMU_LTO="${QEMU_LTO:-off}"
+QEMU_PGO_PROFILE="${QEMU_PGO_PROFILE:-}"
+QEMU_PGO_GENERATE="${QEMU_PGO_GENERATE:-}"
+case "$QEMU_LTO" in thin|off) ;; *) echo "QEMU_LTO must be thin or off" >&2; exit 2 ;; esac
+[[ -z "$QEMU_PGO_GENERATE" || -z "$QEMU_PGO_PROFILE" ]] ||
+  { echo "set QEMU_PGO_GENERATE or QEMU_PGO_PROFILE, not both" >&2; exit 2; }
+# These come after meson's own -O3 on the command line, so they win.
+QEMU_CFLAGS="$QEMU_OPT -fPIC -ffunction-sections -fdata-sections $QEMU_TUNE"
+QEMU_LDFLAGS=""
+# With LTO, the -O level on the link line sets lld's LTO optimisation level.
+[[ "$QEMU_LTO" == off ]] || QEMU_LDFLAGS+=" $QEMU_OPT"
+if [[ -n "$QEMU_PGO_GENERATE" ]]; then
   # Atomic counter updates: several vCPU threads run the same code at once.
-  QEMU_CFLAGS+=" -fprofile-generate=$PGO_GENERATE -fprofile-update=atomic"
-  QEMU_LDFLAGS+=" -fprofile-generate=$PGO_GENERATE"
+  QEMU_CFLAGS+=" -fprofile-generate=$QEMU_PGO_GENERATE -fprofile-update=atomic"
+  QEMU_LDFLAGS+=" -fprofile-generate=$QEMU_PGO_GENERATE"
 fi
-if [[ -n "$PGO_PROFILE" ]]; then
-  [[ -f "$PGO_PROFILE" ]] || { echo "PGO_PROFILE: no such file: $PGO_PROFILE" >&2; exit 1; }
-  PGO_PROFILE="$(cd "$(dirname "$PGO_PROFILE")" && pwd)/$(basename "$PGO_PROFILE")"
+if [[ -n "$QEMU_PGO_PROFILE" ]]; then
+  [[ -f "$QEMU_PGO_PROFILE" ]] || { echo "QEMU_PGO_PROFILE: no such file: $QEMU_PGO_PROFILE" >&2; exit 1; }
+  QEMU_PGO_PROFILE="$(cd "$(dirname "$QEMU_PGO_PROFILE")" && pwd)/$(basename "$QEMU_PGO_PROFILE")"
   # A profile from an older Inferno still helps for the code that didn't change;
   # functions that did are compiled without it, so don't warn about each one.
-  QEMU_CFLAGS+=" -fprofile-use=$PGO_PROFILE -Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled"
-  QEMU_CFLAGS+=" -Wno-backend-plugin"
+  QEMU_CFLAGS+=" -fprofile-use=$QEMU_PGO_PROFILE -Wno-profile-instr-out-of-date"
+  QEMU_CFLAGS+=" -Wno-profile-instr-unprofiled -Wno-backend-plugin"
 fi
 
 if [[ -z "${ANDROID_NDK_HOME:-}" ]]; then
@@ -116,6 +124,9 @@ chmod +x "$WORK/pkg-config"
 export PKG_CONFIG="$WORK/pkg-config"
 
 cross_file() { # system cflags ldflags
+  local link
+  link="$(printf "'%s'," -L"$PREFIX/lib" $3)"
+  link="${link%,}"
   cat <<EOF
 [binaries]
 c = '$CC'
@@ -135,8 +146,8 @@ endian = 'little'
 [built-in options]
 c_args = [$(printf "'%s'," $2 -I"$PREFIX/include")]
 cpp_args = [$(printf "'%s'," $2 -I"$PREFIX/include")]
-c_link_args = [$(printf "'%s'," -L"$PREFIX/lib" $3)]
-cpp_link_args = [$(printf "'%s'," -L"$PREFIX/lib" $3)]
+c_link_args = [$link]
+cpp_link_args = [$link]
 default_library = 'static'
 prefix = '$PREFIX'
 libdir = 'lib'
@@ -325,7 +336,7 @@ configure_qemu() { # builddir [extra meson args...]
 }
 
 lto_args() {
-  [[ "$LTO" == off ]] || echo "-Db_lto=true -Db_lto_mode=$LTO"
+  [[ "$QEMU_LTO" == off ]] || echo "-Db_lto=true -Db_lto_mode=$QEMU_LTO"
 }
 
 # Everything that decides how QEMU is compiled, so a build tree configured with
@@ -343,7 +354,7 @@ needs_configure() { # builddir [extra meson args...]
 build_qemu() {
   [[ -f "$SRC_QEMU/meson.build" ]] || { echo "run: git submodule update --init" >&2; exit 1; }
   local b="$WORK/qemu"
-  if [[ -n "$PGO_GENERATE" ]]; then
+  if [[ -n "$QEMU_PGO_GENERATE" ]]; then
     build_qemu_pgo_gen
     return
   fi
@@ -386,7 +397,7 @@ build_qemu_lib() {
 }
 
 # An instrumented QEMU for collecting a PGO profile (docs/PERF.md). It writes
-# $PGO_GENERATE/default_<id>.profraw when it exits normally (SIGINT/SIGTERM/quit,
+# $QEMU_PGO_GENERATE/default_<id>.profraw when it exits normally (SIGINT/SIGTERM/quit,
 # not SIGKILL); runs of the same binary accumulate in that file.
 build_qemu_pgo_gen() {
   local b="$WORK/qemu-pgo-gen"
@@ -395,7 +406,7 @@ build_qemu_pgo_gen() {
     configure_qemu "$b"
   fi
   ninja -C "$b" -j"$JOBS" qemu-system-aarch64
-  echo "instrumented QEMU: $b/qemu-system-aarch64 (profiles go to $PGO_GENERATE on the device)"
+  echo "instrumented QEMU: $b/qemu-system-aarch64 (profiles go to $QEMU_PGO_GENERATE on the device)"
 }
 
 pgo_merge() { # out.profdata raw.profraw...

@@ -8,7 +8,7 @@
 # Usage: native/pgo-profile.sh OUT.profdata --serial <adb serial> --kernel ... --dtb ... \
 #          --trustcache ... --ramdisk ... --sep-rom ... --sep-fw ...
 # Everything after OUT is passed to restore_bench.py (your own kit files; see
-# docs/PERF.md). Then: PGO_PROFILE=OUT.profdata native/build-android.sh qemu
+# docs/PERF.md). Then: QEMU_PGO_PROFILE=OUT.profdata native/build-android.sh qemu
 #
 # The profile holds only QEMU's own branch and call counts, keyed by QEMU function
 # names. Static functions are keyed by their path relative to the build tree, so
@@ -29,7 +29,7 @@ done
 [[ -n "$SERIAL" ]] || { echo "pass --serial <adb serial>" >&2; exit 2; }
 PROF_DIR="$DEVICE_DIR/profiles"
 
-PGO_GENERATE="$PROF_DIR" NO_QEMU_LIB=1 "$ROOT/native/build-android.sh" qemu
+QEMU_PGO_GENERATE="$PROF_DIR" NO_QEMU_LIB=1 "$ROOT/native/build-android.sh" qemu
 adb -s "$SERIAL" shell "rm -rf $PROF_DIR && mkdir -p $PROF_DIR"
 # Counters are written when QEMU exits normally; restore_bench stops it with SIGINT.
 python3 "$ROOT/tools/restore_bench.py" --runs "$RUNS" --smp "$SMP" --device-dir "$DEVICE_DIR" \
@@ -40,4 +40,4 @@ trap 'rm -rf "$raw"' EXIT
 adb -s "$SERIAL" pull -q "$PROF_DIR/." "$raw/"
 ls "$raw"/*.profraw >/dev/null 2>&1 || { echo "no .profraw from the device (did QEMU exit normally?)" >&2; exit 1; }
 "$ROOT/native/build-android.sh" pgo-merge "$OUT" "$raw"/*.profraw
-echo "wrote $OUT; build with: PGO_PROFILE=$OUT native/build-android.sh qemu"
+echo "wrote $OUT; build with: QEMU_PGO_PROFILE=$OUT native/build-android.sh qemu"
