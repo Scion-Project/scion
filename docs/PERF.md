@@ -33,6 +33,12 @@ Issue #48. Measured on the Android **emulator** (`sdk_gphone64_arm64`, 8 host co
   TLB floor with a cheaper `tlb_reset_dirty` (#40): **the restore boot is 5.3% faster
   (13.84 → 13.11 s) and uses 7.4% less host CPU** (12+12 emulator runs). See
   [Softmmu memory path](#softmmu-memory-path-2026-10-22).
+- **Phone profile 2026-10-22: on the Pixel's full-boot UI workload ≈24% of the VM's CPU is
+  the indirect-branch TB lookup missing the jump cache** (`qht_lookup_custom` 10.7%, the
+  jump-cache probe 9.3%), not a spin loop. Counted on the same VM on the Mac: the kept-aside
+  jump caches (Inferno#36) cause most of the misses; Inferno#53 turns them off (hit rate
+  93.5% → 95.3-96.0%, 7-30% more guest progress in 150 s) and #54 stops large range flushes
+  from wiping the cache. See [Phone profile](#phone-profile-2026-10-22).
 - **Compiler options (#77, below):** PGO (profile from the restore boot) takes 5.9% off the
   boot's wall time and 8.1% off its host CPU on current Inferno, or 6.3% and 10.0% with
   ThinLTO. ThinLTO alone gives ≤3.6% (within noise) and makes the libraries 11% smaller; `-O3`
@@ -297,6 +303,116 @@ interleaved):
 w11 loads over 4096 pages 0.97 s → 0.08 s with `x-tlb-bits=12` (fits the TLB), unchanged at
 the 1024 default; w1/w4/w9 within noise. Linux guest (upstream 10.2.2 port, 4 KiB pages):
 no measurable change.
+
+## Phone profile 2026-10-22
+
+The owner reported the guest as "still very slow" on his Pixel 10 (Tensor G5: cpu0-1 A520,
+cpu2-6 A725, cpu7 X4). Profile: `simpleperf record -e cpu-clock:u --duration 20` of the VM
+process (in-process library, app b0452f3 = Inferno c64e327, CI run 39753943400, `-smp 4`,
+native-fp on, asid-tlbs default, `QEMU_VCPU_AFFINITY` `2-7;2-7;2-7;0-1`), a full iOS 14.0
+boot at the UI. Symbolized against an unstripped `libqemu-system-aarch64-shared.so` built
+from the same commit with the app's build script (`native/build-android.sh qemu-lib`, NDK
+28.2); the hot functions' instruction bytes match the APK's stripped library byte for byte,
+at offsets 0x1000 or 0x1120 lower (the CI build's paths differ). The build has no `-g`, so
+the table is per function.
+
+Threads: the three application vCPUs 31.1%, 30.5%, 30.4% of the samples (each about 0.8 of
+a core over 20 s), the main loop 5.2%, the SEP vCPU 2.7%.
+
+| % of all samples | function | where |
+|---|---|---|
+| 38.2 | generated code | TCG code buffer |
+| **10.7** | `qht_lookup_custom` | util/qht.c (the global TB hash table) |
+| **9.3** | `tcg_lookup_tb_ptr` (jump-cache probe, inlined) | accel/tcg/cpu-exec.c |
+| 2.5 | `tb_lookup_cmp` | accel/tcg/cpu-exec.c (qht compare callback) |
+| 1.9 | `get_phys_addr_nogpc` | target/arm/ptw.c (page walks) |
+| 1.6 | `do_ld_8` | accel/tcg/cputlb.c |
+| 1.4 | `probe_access_internal` | accel/tcg/cputlb.c |
+| 1.3 | `tlb_reset_dirty` | accel/tcg/cputlb.c |
+| 1.1 | `__memcpy_aarch64_simd` | bionic libc |
+| 1.0 | `tlb_set_page_full` | accel/tcg/cputlb.c |
+| 1.0 | `flush_idcache_range` | util/cacheflush.c (new TBs) |
+| 1.0 | `__memset_aarch64` | bionic libc |
+| 0.9 | `do_ld4_mmu` | accel/tcg/cputlb.c |
+| 0.8 | `helper_arm_lookup_tb_ptr` | target/arm/tcg/hflags.c |
+| 0.7 | `tb_jmp_cache_clear_page_jc` | accel/tcg/cputlb.c |
+| 0.7 | `tlsdesc_resolver_dynamic` | linker64 (TLS of the dlopen'ed library) |
+| 0.7 | `__kernel_clock_gettime` | vDSO |
+
+**The two hot spots are not spin loops; both are the indirect-branch TB lookup waiting on
+memory.** The ≈18% "tiny loop" at `+9234c4..cc` is the start of `qht_lookup_custom`: the
+sample lands on the `dmb ishld` right after the first load from the hash bucket, i.e. a
+cache miss on the bucket line (a TB table sized for 1 GiB of code is far bigger than any
+cache). The ≈19% cluster at `+4f2f0c`/`+4f2f18` is `tcg_lookup_tb_ptr`: the load of the
+jump-cache entry (`jc->array[hash].tb`, 5.2%) and then the dependent load of the TB's
+`cs_base`/`flags` (2.8%); `+4f3e60` is `tb_lookup_cmp` loading a candidate TB's `cflags`.
+Together with `tb_lookup_cmp`, `helper_arm_lookup_tb_ptr` and the jump-cache clears this
+path is **≈24% of the phone's CPU**, and most of it is jump-cache misses falling through
+to the hash table. The restore boot hits the jump cache 98.5% of the time, which is why it
+didn't show there.
+
+### Why the jump cache misses: full-boot counters (Mac mini)
+
+The phone's VM folder copied to the Mac mini, booted with `-snapshot -smp 4 -m 4G` on the
+macOS host (`~/tcgperf/fullboot.py`) with a counters-only Inferno build: first 150 s,
+interleaved runs.
+
+| config | runs | jc hit rate | misses (qht lookups) | empty slot | other TB in slot | guest indirect branches in 150 s |
+|---|---|---|---|---|---|---|
+| c64e327 (as shipped) | 1 | 93.3% | 196M | 107M | 64M | 2.51G |
+| + range-flush fix (Inferno#54) | 3 | 93.5-93.6% | 186-187M | 96M | 63-65M | 2.44-2.49G |
+| + `x-asid-jc=off` (Inferno#53) | 4 | 95.3-96.0% | 148-160M | 21-23M | 99-108M | 2.60-3.21G |
+| + 32768 entries (Inferno#55, draft) | 3 | 96.4-96.9% | 124-133M | 25-26M | 71-77M | 2.67-3.27G |
+
+About 390k ASID switches in 150 s across dozens of processes. Findings:
+
+- **Kept-aside jump caches (Inferno#36) cost more than they save on iOS.** Eight slots
+  can't hold the working set of address spaces; a swapped-in cache is cold or stale and only
+  knows the kernel paths that ran in its own process, where the one live cache keeps the
+  kernel's global entries across switches. Off, the empty-slot misses drop 4x and the guest
+  gets 7-30% further in the same 150 s (the APFS transaction marker `xid 131` at 66-77 s
+  instead of 83-85 s). The ASID TLB contexts themselves stay on.
+- **Large TLB range flushes wiped the whole jump cache**: 54k of the 56k whole-cache clears
+  in 240 s, from XNU unmapping ranges ≥ 1 MiB. Inferno#54 clears just the range.
+- **The rest is conflicts**: with one cache, two thirds of the misses are two pages of the
+  same 256-slot group wanting the same slot. 32768 entries cut those by 28% but double the
+  footprint (512 KiB per vCPU); it needs a phone A/B first because the jump-cache probe is
+  itself memory-bound there. A 2-way set-associative cache of the same size is the
+  alternative.
+- Not the cause: SPRR permission flushes (13 in 240 s) and `flush_by_mmuidx` (2k).
+
+### Scheduling and DVFS
+
+From the profile: the three busy vCPU threads ran at about 0.8 core each, at times two on
+the same core, with clocks at 1.8-2.4 GHz of 3.05/3.78 GHz and thermal status 1. The work is
+memory-bound (above), so every migration also costs a cold L1/L2.
+
+- **Exclusive pinning is worth an A/B on the phone; no code change is needed for it.** The
+  affinity setting already accepts one cpu-set per vCPU, e.g. `7;6;5;0-1` (vCPU 0 on the
+  X4, the next two on one A725 each, SEP on the little cores) against the default
+  `2-7;2-7;2-7;0-1`. Expected gain: no co-scheduling of two vCPUs and no migrations; risk:
+  a vCPU can't escape a core when the render thread or the main loop lands on it. It
+  wasn't measured: the phone had no VM running and this run only profiles read-only.
+- **`setSustainedPerformanceMode` would not help.** On Pixels it caps the clocks at a level
+  the device can hold indefinitely, i.e. lower than the 2.4 GHz peaks seen here.
+  An ADPF `PerformanceHintManager` session over the vCPU threads (reporting the actual
+  work duration against a frame-sized target) is the API that can raise the clock floor;
+  it is the thing to try after the pinning A/B, and only if the clocks stay low.
+
+### Next targets
+
+1. Ship Inferno#53 and #54 and re-profile on the phone (same simpleperf command).
+2. Line-sized jump-cache entries (PERF.md item 2): keep `pc`, `cs_base`, `flags`,
+   `cflags` and the code pointer in a 32-byte entry so a hit touches one line instead of
+   the entry plus the TB (the 2.8% dependent load). It needs TB invalidation to clear
+   every vCPU's live and kept-aside entries (the hit would no longer see `CF_INVALID`) and
+   a store/re-check ordering against a concurrent refill.
+3. Conflict misses: #55 or a 2-way jump cache, decided on the phone.
+4. `tlsdesc_resolver_dynamic` (0.7%): the in-process library reaches its TLS
+   (`__thread` variables such as `current_cpu`) through bionic's dynamic TLS resolver; the
+   separate-process executable doesn't. Initial-exec TLS or caching the pointers would remove it.
+5. Softmmu fills (`get_phys_addr_nogpc`, `probe_access_internal`, `tlb_set_page_full`,
+   `tlb_reset_dirty`: ≈5.6%), as in item 4 of the ranked list.
 
 ## Optimisation ideas, ranked
 
