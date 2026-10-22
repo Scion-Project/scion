@@ -578,16 +578,21 @@ class MainActivity : Activity() {
 
         card.addView(ui.text(14f, Ui.TEXT, bold = true).apply { text = "Hardware buttons bar" }, ui.lp(top = 20))
         val group = RadioGroup(this).also { card.addView(it, ui.lp(top = 4)) }
-        for (m in DisplayPrefs.BarMode.entries) {
+        // Generated ids: the settings card's radio buttons use 1..n, and duplicate ids mix up saved view state.
+        val ids = DisplayPrefs.BarMode.entries.associateWith { View.generateViewId() }
+        for ((m, viewId) in ids) {
             group.addView(RadioButton(this).apply {
-                id = m.ordinal + 1
+                id = viewId
                 text = m.label
                 setTextColor(Ui.TEXT)
                 buttonTintList = ColorStateList.valueOf(ui.accent)
+                isSaveEnabled = false
             })
         }
-        group.check(p.bar.ordinal + 1)
-        group.setOnCheckedChangeListener { _, id -> save(p.copy(bar = DisplayPrefs.BarMode.entries[id - 1])) }
+        group.check(ids.getValue(p.bar))
+        group.setOnCheckedChangeListener { _, id ->
+            ids.entries.firstOrNull { it.value == id }?.let { save(p.copy(bar = it.key)) }
+        }
         card.addView(ui.text(12.5f, Ui.MUTED).apply {
             text = "Vol −, Vol +, Home, Apps and Power under the guest screen. Auto-hide: hidden until you tap the " +
                 "border or tap with two fingers, and hidden again 3 s after the last press. Hidden, the guest " +
