@@ -88,7 +88,7 @@ recommended for the phone.
 There's no published release yet, so build it:
 
 ```sh
-git clone https://github.com/dylanneve1/ios-on-pixel && cd ios-on-pixel
+git clone https://github.com/dylanneve1/scion && cd ios-on-pixel
 git submodule update --init                # our Inferno fork, in third_party/inferno
 native/build-android.sh                    # QEMU + static deps for Android arm64 (~10 min the first time)
 ./gradlew installDebug                     # phone connected with USB debugging on
@@ -101,10 +101,10 @@ cmake`). Gradle needs JDK 17 or newer; Android Studio's bundled one works:
 `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"`.
 
 If a release APK appears on the
-[Releases page](https://github.com/dylanneve1/ios-on-pixel/releases), install
+[Releases page](https://github.com/dylanneve1/scion/releases), install
 that instead with `adb install -r <apk>`, or open it on the phone.
 
-Open **iOS on Pixel** once, and allow notifications: the running VM lives in a
+Open **Scion** once, and allow notifications: the running VM lives in a
 foreground service with a "VM running" notification. The top of the main
 screen shows the VM folder path and a checklist. `✓ QEMU binary bundled`
 should already be ticked.
@@ -146,7 +146,7 @@ The settings on the main screen are saved when you tap **Start**:
 | Setting | Default | Notes |
 |---|---|---|
 | Guest RAM (GiB) | 4 | 1–12 |
-| vCPUs | **4** | **Keep it at 4 for now** (3 application cores + 1 SEP core). 7 matches the real iPhone 11 but currently aborts on Android ([#33](https://github.com/dylanneve1/ios-on-pixel/issues/33)) |
+| vCPUs | **4** | **Keep it at 4 for now** (3 application cores + 1 SEP core). 7 matches the real iPhone 11 but currently aborts on Android ([#33](https://github.com/dylanneve1/scion/issues/33)) |
 | JIT translation cache (MiB) | 1024 | 64–4096 |
 | vCPU → Tensor G5 core pinning | `auto` | `auto` derives it from the vCPU count (application vCPUs → `2-7`, SEP vCPU → `0-1`; the effective string is shown under the field). Or one cpu-set per vCPU, `;`-separated, the last one repeats. Empty turns pinning off |
 | Split W^X JIT mapping | off | try it only if QEMU fails to allocate its code buffer |
@@ -203,7 +203,7 @@ With adb you can also read the log directly:
 
 ## Current limits
 
-* **`-smp 4` until [#33](https://github.com/dylanneve1/ios-on-pixel/issues/33).**
+* **`-smp 4` until [#33](https://github.com/dylanneve1/scion/issues/33).**
   With 7 vCPUs, QEMU creates enough memory mappings to hit Android's
   per-process limit and aborts.
 * **Slow.** Every Apple CPU instruction goes through QEMU's TCG JIT, and the
@@ -220,4 +220,4 @@ With adb you can also read the log directly:
   Keep the app or the display in front during the first runs.
 * **AVF (hardware virtualization)** appears on the main screen but can't be
   selected. That work lives in
-  [ios-on-pixel-avf](https://github.com/dylanneve1/ios-on-pixel-avf).
+  [scion-avf](https://github.com/dylanneve1/scion-avf).

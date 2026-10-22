@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "ios-on-pixel"
+rootProject.name = "scion"
 include(":app")
