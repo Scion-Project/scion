@@ -329,7 +329,7 @@ Build time (4-core Linux VPS, both QEMU variants): 2:26 base, 2:29 ThinLTO.
 - **`-O3` doesn't help the boot.** It is within noise on the restore boot and 2.6% bigger,
   and of the microbenchmarks it only speeds up w1 (5%).
 - **ThinLTO is neutral to slightly positive for speed (≤2%, within noise) and saves 11% in
-  size.** It boots fine (24 restore boots).
+  size.** All 64 restore boots in these batches (16 with ThinLTO alone, 8 more with PGO + ThinLTO) reached `waiting_host` with no panic.
 - **PGO is the only clear speed win**: 4.5% off the restore boot in wall time and CPU, and
   6.4% CPU with ThinLTO. The ranges barely overlap with base. It also takes 8–10% off the
   indirect-branch and TB-invalidation microbenchmarks it was not trained on. But the profile was
