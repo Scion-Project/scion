@@ -6,9 +6,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- Not used yet: requested so the AVF capability check can see an adb grant
-         (adb shell pm grant <pkg> android.permission.MANAGE_VIRTUAL_MACHINE). -->
+    <!-- The AVF backend. Both are development permissions, granted over adb
+         (adb shell pm grant <pkg> <permission>); never at runtime. -->
     <uses-permission android:name="android.permission.MANAGE_VIRTUAL_MACHINE" />
+    <uses-permission android:name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" />
+
+    <uses-feature
+        android:name="android.software.virtualization_framework"
+        android:required="false" />
 
     <application
         android:extractNativeLibs="true"
@@ -37,7 +42,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Runs a user-started virtual machine (QEMU) until the user stops it." />
+                android:value="Runs a user-started virtual machine (QEMU or AVF) until the user stops it." />
         </service>
 
         <!-- In-process QEMU (VmSettings.inProcess): QEMU runs as a library here and

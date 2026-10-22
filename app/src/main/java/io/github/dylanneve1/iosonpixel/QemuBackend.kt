@@ -16,9 +16,11 @@ import java.util.concurrent.TimeUnit
  * by [RfbClient]), the buttons go through the human monitor ([Monitor]) and
  * multi-touch goes through QMP ([QmpTouch]).
  */
-class QemuBackend(ctx: Context) : VmBackend {
+class QemuBackend(ctx: Context, private val vmDir: File? = null) : VmBackend {
     private val app = ctx.applicationContext
     private val paths = AppPaths(app)
+    /** Read on each use: a move to internal storage changes [AppPaths.vmDir]. */
+    private val dir get() = vmDir ?: paths.vmDir
 
     override val kind = Backend.QEMU
 
@@ -26,7 +28,7 @@ class QemuBackend(ctx: Context) : VmBackend {
     private val libOk get() = paths.qemuLib.isFile && paths.qemuJni.isFile
 
     override fun checks(): List<VmBackend.Check> {
-        val vm = VmLayout(paths.vmDir)
+        val vm = VmLayout(dir)
         val problems = vm.problems()
         val qemuOk = paths.qemu.isFile
         return buildList {
@@ -43,13 +45,13 @@ class QemuBackend(ctx: Context) : VmBackend {
         }
     }
 
-    override fun problems(): List<String> = VmLayout(paths.vmDir).problems() + listOfNotNull(
+    override fun problems(): List<String> = VmLayout(dir).problems() + listOfNotNull(
         if (inProcess) "QEMU library for in-process mode not bundled in this build".takeIf { !libOk }
         else "QEMU binary not bundled in this build".takeIf { !paths.qemu.isFile },
     )
 
     override fun start(settings: VmSettings, log: (String) -> Unit): VmBackend.Instance? {
-        val vm = VmLayout(paths.vmDir)
+        val vm = VmLayout(dir)
         installDataFiles()
         paths.vncSocket.delete()
         paths.monitorSocket.delete()

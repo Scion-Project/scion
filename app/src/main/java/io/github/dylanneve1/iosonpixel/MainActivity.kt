@@ -60,6 +60,9 @@ class MainActivity : Activity() {
     private lateinit var splitWx: Switch
     private lateinit var inProcess: Switch
     private lateinit var backendGroup: RadioGroup
+    private lateinit var securityGroup: RadioGroup
+    private lateinit var avfInfo: TextView
+    private lateinit var subtitle: TextView
     private lateinit var advanced: LinearLayout
     private lateinit var advancedToggle: TextView
 
@@ -69,6 +72,14 @@ class MainActivity : Activity() {
 
     private val onState: () -> Unit = { render() }
 
+    /**
+     * Developer override (debuggable builds): run this backend / VM folder instead of the saved
+     * ones, without saving anything. See the hooks at the end of onCreate.
+     */
+    private var devBackend: Backend? = null
+    private var devVmDir: File? = null
+    private val devSession get() = devBackend != null || devVmDir != null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ui = Ui(this)
@@ -76,7 +87,12 @@ class MainActivity : Activity() {
         paths.sharedVmDir.mkdirs()
         DebugBundle.install(this)
         val s = VmSettings.load(this)
-        backend = VmBackend.create(this, s.backend)
+        val debuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (debuggable) {
+            devBackend = intent.getStringExtra(VmService.EXTRA_BACKEND)?.let { Backend.fromId(it) }
+            devVmDir = intent.getStringExtra(VmService.EXTRA_VM_DIR)?.let { File(it) }
+        }
+        backend = VmBackend.create(this, devBackend ?: s.backend, devVmDir)
         window.decorView.setBackgroundColor(Ui.BG)
         // The header below carries the app name; the theme's action bar would repeat it.
         actionBar?.hide()
@@ -91,9 +107,7 @@ class MainActivity : Activity() {
 
         // Header
         root.addView(ui.text(30f, Ui.TEXT).apply { text = getString(R.string.app_name) }, ui.lp(top = 16))
-        root.addView(ui.text(14f, Ui.MUTED).apply {
-            text = "Emulated iPhone 11 (t8030) · ${backend.kind.label}"
-        }, ui.lp(top = 2))
+        subtitle = ui.text(14f, Ui.MUTED).also { root.addView(it, ui.lp(top = 2)) }
 
         buildStatusCard(root)
         buildStorageCard(root)
@@ -121,7 +135,6 @@ class MainActivity : Activity() {
         }
 
         // Developer hooks. This activity is exported, so only honour them in debuggable builds.
-        val debuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
         // DisplayActivity isn't exported:
         //   adb shell am start -n <pkg>/.MainActivity --ez attach true
         if (debuggable && intent.getBooleanExtra(DisplayActivity.EXTRA_ATTACH, false)) {
@@ -131,6 +144,13 @@ class MainActivity : Activity() {
         if (debuggable && intent.getBooleanExtra("storage_bench", false)) {
             val mb = intent.getIntExtra("storage_bench_mb", 100).coerceIn(1, 1024)
             Thread({ StorageBench.run(applicationContext, mb) }, "storage-bench").start()
+        }
+        // Run a backend / VM folder for this session only, nothing saved; `start` presses Start:
+        //   adb shell am start -n <pkg>/.MainActivity --es backend avf --es vm_dir <dir> --ez start true
+        if (devSession) VmState.addLine("note: developer session: ${backend.kind.label}" +
+            (devVmDir?.let { ", VM folder $it" } ?: "") + "; settings are not saved")
+        if (debuggable && savedInstanceState == null && intent.getBooleanExtra(EXTRA_START, false)) {
+            if (VmState.status == VmState.Status.STOPPED) startVm()
         }
     }
 
@@ -147,7 +167,7 @@ class MainActivity : Activity() {
         statusDetail = ui.text(13f, Ui.MUTED).also { card.addView(it, ui.lp(top = 4)) }
 
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        start = ui.button("Start", Ui.Style.FILLED) { saveSettings(); VmService.start(this); openDisplay() }
+        start = ui.button("Start", Ui.Style.FILLED) { startVm() }
         stop = ui.button("Stop", Ui.Style.DANGER) { VmService.stop(this) }
         display = ui.button("Display", Ui.Style.TONAL) { openDisplay() }
         buttons.addView(start, ui.lp(width = 0, weight = 1.3f))
@@ -235,12 +255,32 @@ class MainActivity : Activity() {
                 if (!b.implemented) alpha = 0.5f
             })
         }
-        backendGroup.check(s.backend.ordinal + 1)
-        val avf = AvfSupport.check(this)
+        backendGroup.check((devBackend ?: s.backend).ordinal + 1)
+        // The checks and the header depend on it, so apply it right away.
+        backendGroup.setOnCheckedChangeListener { _, _ ->
+            saveSettings()
+            if (devBackend != null) devBackend = formSettings().backend
+            backend = VmBackend.create(this, formSettings().backend, devVmDir)
+            setLogShown(logBox.visibility == View.VISIBLE)
+            render()
+        }
+        avfInfo = ui.text(12.5f, Ui.MUTED, selectable = true).also { advanced.addView(it, ui.lp(top = 4)) }
+
+        advanced.addView(ui.text(14f, Ui.TEXT, bold = true).apply { text = "Guest security" }, ui.lp(top = 20))
+        securityGroup = RadioGroup(this).also { advanced.addView(it, ui.lp(top = 4)) }
+        for (level in Security.entries) {
+            securityGroup.addView(RadioButton(this).apply {
+                id = level.ordinal + 1
+                text = level.label + if (level == Security.DEFAULT) " (default)" else ""
+                setTextColor(Ui.TEXT)
+                buttonTintList = ColorStateList.valueOf(ui.accent)
+            })
+        }
+        securityGroup.check(s.security.ordinal + 1)
         advanced.addView(ui.text(12.5f, Ui.MUTED).apply {
-            text = "AVF is experimental (see ios-on-pixel-avf) and not selectable in this build.\n" +
-                (if (avf.hasFeature) "✓" else "✗") + " this device advertises ${AvfSupport.FEATURE}\n" +
-                (if (avf.hasPermission) "✓" else "✗") + " MANAGE_VIRTUAL_MACHINE granted"
+            text = "AVF only: passed to the guest kernel as ${Security.BOOT_ARG}=<level>. The kernel decides what each " +
+                "level means. The default is the most secure level the kernel boots with; until the kernel defines " +
+                "its levels, that's ${Security.DEFAULT.label}."
         }, ui.lp(top = 4))
 
         renderPinning()
@@ -248,7 +288,8 @@ class MainActivity : Activity() {
         // Open the advanced section if anything in it is set away from its default.
         val d = VmSettings()
         setAdvancedShown(
-            s.vcpuAffinity != d.vcpuAffinity || s.splitWx != d.splitWx || s.inProcess != d.inProcess || s.backend != d.backend,
+            s.vcpuAffinity != d.vcpuAffinity || s.splitWx != d.splitWx || s.inProcess != d.inProcess ||
+                s.backend != d.backend || s.security != d.security || devBackend != null,
         )
     }
 
@@ -329,6 +370,13 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
+        subtitle.text = when (backend.kind) {
+            Backend.QEMU -> "Emulated iPhone 11 (t8030) · QEMU"
+            Backend.AVF -> "Custom-kernel VM · AVF (hardware virtualization)"
+        } + if (devSession) " · developer session" else ""
+        avfInfo.text = "AVF needs a one-time adb setup; with AVF selected, the checks above show what's missing.\n" +
+            AvfSupport.checks(this).joinToString("\n") { (if (it.ok) "✓ " else "✗ ") + it.text.lineSequence().first() }
+
         val st = VmState.status
         val lastExit = VmState.lastExit?.takeIf { st == VmState.Status.STOPPED }
         status.text = when (st) {
@@ -339,9 +387,13 @@ class MainActivity : Activity() {
         }
         val dotColor = if (lastExit != null && lastExit != 0) Ui.BAD else ui.stateColor(st)
         statusDot.background = ui.pill(dotColor)
+        val notice = VmState.notice
+        statusDetail.setTextColor(if (notice != null) Ui.BAD else Ui.MUTED)
         statusDetail.text = when {
+            notice != null -> notice + (lastExit?.let { "\nLast exit: $it" } ?: "")
             lastExit != null -> "Last exit: $lastExit"
-            st == VmState.Status.RUNNING -> "Open the display to use the iPhone."
+            st == VmState.Status.RUNNING && backend.hasDisplay -> "Open the display to use the iPhone."
+            st == VmState.Status.RUNNING -> "No display yet: the guest console is in the output below."
             else -> ""
         }
         statusDetail.visibility = if (statusDetail.text.isEmpty()) View.GONE else View.VISIBLE
@@ -394,7 +446,7 @@ class MainActivity : Activity() {
 
         start.isEnabled = st == VmState.Status.STOPPED && !importing && failing == 0
         stop.isEnabled = st == VmState.Status.RUNNING || st == VmState.Status.STARTING
-        display.isEnabled = st != VmState.Status.STOPPED
+        display.isEnabled = st != VmState.Status.STOPPED && backend.hasDisplay
 
         val text = VmState.log()
         log.text = text.ifEmpty { "No output yet." }
@@ -409,7 +461,16 @@ class MainActivity : Activity() {
         pinning.text = "QEMU_VCPU_AFFINITY = " + p.ifBlank { "(off)" }
     }
 
-    private fun saveSettings() = formSettings().save(this)
+    /** A developer session saves nothing; it runs what it was started with. */
+    private fun saveSettings() {
+        if (!devSession) formSettings().save(this)
+    }
+
+    private fun startVm() {
+        saveSettings()
+        VmService.start(this, devBackend, devVmDir)
+        if (backend.hasDisplay) openDisplay()
+    }
 
     /** The settings as currently entered on screen. */
     private fun formSettings(): VmSettings {
@@ -422,6 +483,7 @@ class MainActivity : Activity() {
             inProcess = inProcess.isChecked,
             vcpuAffinity = affinity.text.toString().trim(),
             backend = Backend.entries.firstOrNull { it.ordinal + 1 == backendGroup.checkedRadioButtonId } ?: d.backend,
+            security = Security.entries.firstOrNull { it.ordinal + 1 == securityGroup.checkedRadioButtonId } ?: d.security,
         )
     }
 
@@ -436,5 +498,6 @@ class MainActivity : Activity() {
 
     private companion object {
         const val REQ_IMPORT = 1
+        const val EXTRA_START = "start"
     }
 }

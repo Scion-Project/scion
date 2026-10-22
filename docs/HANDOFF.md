@@ -123,10 +123,13 @@ needed three more things beyond the above:
 ## Architecture recap
 
 * **Backends:** the VM engine sits behind `VmBackend` (start/stop, readiness
-  checks, display, buttons), chosen by `VmSettings.backend`. `QemuBackend` is
-  the only implementation; AVF is listed on the main screen but disabled
-  until scion-avf has something that boots. Everything below is the
-  QEMU backend.
+  checks, display, buttons), chosen by `VmSettings.backend`. `QemuBackend`
+  emulates the iPhone; `AvfBackend` boots a custom kernel under AVF (pKVM)
+  from `avf.properties` in the VM folder, through the reflection layer in
+  `avf/AvfApi.kt` (ported from the scion-avf probe). It's headless
+  until `avf/AvfIo.kt` (the display/input seam) gets an implementation. Its
+  setup is in [PHONE-QUICKSTART.md](PHONE-QUICKSTART.md#avf-backend-experimental).
+  Everything below is the QEMU backend.
 * QEMU runs as a **child process** (`libqemu-system-aarch64.so` in
   `nativeLibraryDir`, `useLegacyPackaging = true` so it's extracted and
   executable), launched by `QemuBackend`. `VmService` is a `specialUse`
