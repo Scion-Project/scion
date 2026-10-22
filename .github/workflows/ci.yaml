@@ -360,8 +360,9 @@ jobs:
           mkdir -p app/src/main/assets/qemu-data/keymaps
           cp native/keymaps/en-us app/src/main/assets/qemu-data/keymaps/
 
-      - name: Lint + assemble debug APK (stub)
-        run: ./gradlew --no-daemon lint assembleDebug
+      # Unit tests: JVM only (app/src/test), e.g. the install migration (InstallMigrationTest).
+      - name: Lint + unit tests + assemble debug APK (stub)
+        run: ./gradlew --no-daemon lint testDebugUnitTest assembleDebug
 
       - name: Upload stub APK (layout check only)
         uses: actions/upload-artifact@v4.6.0
