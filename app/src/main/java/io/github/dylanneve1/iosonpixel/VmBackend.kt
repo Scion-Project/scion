@@ -55,7 +55,8 @@ interface VmBackend {
         fun kill()
     }
 
-    data class Check(val ok: Boolean, val text: String)
+    /** A readiness line. A failing [blocking] check stops [start]; a non-blocking one only informs. */
+    data class Check(val ok: Boolean, val text: String, val blocking: Boolean = true)
 
     companion object {
         fun create(ctx: Context, install: Install): VmBackend = when (install.backend) {

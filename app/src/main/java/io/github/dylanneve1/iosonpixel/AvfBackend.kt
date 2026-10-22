@@ -6,6 +6,8 @@ import android.os.Build
 import io.github.dylanneve1.iosonpixel.avf.AvfApi
 import io.github.dylanneve1.iosonpixel.avf.AvfException
 import io.github.dylanneve1.iosonpixel.avf.AvfIo
+import io.github.dylanneve1.iosonpixel.avf.Scfb
+import io.github.dylanneve1.iosonpixel.avf.ScfbIo
 import java.io.File
 import java.io.FileWriter
 import java.io.InputStream
@@ -20,38 +22,52 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Hardware virtualization: a non-protected custom-kernel VM under the Android Virtualization
  * Framework (pKVM, with crosvm run by virtmgr), started through [AvfApi]. The guest is described
  * by avf.properties in the VM folder ([AvfLayout]). Its console goes to the app's output view and
- * to avf-console.log; its display and input go through [io] (headless for now, see [AvfIo]).
+ * to avf-console.log; its display and input go through [io]: headless ([AvfIo.None]), or with the
+ * "Experimental AVF display" setting the shared framebuffer and touch of [ScfbIo].
  *
  * Needs a one-time adb setup, which [AvfSupport.checks] spells out when something is missing.
  */
 class AvfBackend(
     ctx: Context,
     private val install: Install,
-    private val io: AvfIo = AvfIo.None,
+    private val io: AvfIo = defaultIo(install),
 ) : VmBackend {
     private val app = ctx.applicationContext
     private val paths = AppPaths(app, install.id)
     private val dir get() = install.dir
+    private val display get() = install.settings.avfDisplay
 
     override val kind = Backend.AVF
 
     override val hasDisplay get() = io.hasDisplay
 
-    override fun checks(): List<VmBackend.Check> = AvfSupport.checks(app) + AvfLayout(dir).checks()
+    override fun checks(): List<VmBackend.Check> =
+        AvfSupport.checks(app, display) + AvfLayout(dir).checks() + listOfNotNull(if (display) AvfSupport.displayCheck(app) else null)
 
-    override fun problems(): List<String> = checks().filter { !it.ok }.map { it.text }
+    override fun problems(): List<String> = checks().filter { !it.ok && it.blocking }.map { it.text }
 
     override fun start(settings: VmSettings, log: (String) -> Unit): VmBackend.Instance? {
         paths.prepare()
         val spec = AvfLayout(dir).spec(settings)
         log("$ avf " + describe(spec))
-        return AvfVm.start(app, spec, io, paths.avfLogFile, log)
+        val run = AvfVm.start(app, spec, io, paths.avfLogFile, log) ?: return null
+        // A VM given the display devices that dies at once: crosvm (or SELinux) refused them.
+        if (io.configured) run.stoppedEarly(EARLY_STOP_MS)?.let { reason ->
+            val text = ScfbIo.UNAVAILABLE + "the VM stopped at start with the display devices ($reason)"
+            log("avf: $text; booting again console-only")
+            VmState.notice("$text. The VM booted console-only.")
+            return AvfVm.start(app, spec, AvfIo.None, paths.avfLogFile, log)
+        }
+        return run
     }
 
-    /** Only reached when [hasDisplay] is false, i.e. headless: say so instead of connecting. */
+    /** Only reached when there is no display: say so instead of connecting. */
     override fun openDisplay(listener: VmDisplay.Listener): VmDisplay = object : VmDisplay {
         override fun start() = listener.onDisconnected(
-            IllegalStateException("this AVF guest has no display yet; its console is in the app's output view"),
+            IllegalStateException(
+                VmState.notice?.takeIf { it.startsWith(ScfbIo.UNAVAILABLE) }
+                    ?: "this AVF guest has no display; its console is in the app's output view",
+            ),
         )
         override fun close() = Unit
         override fun pointer(x: Int, y: Int, pressed: Boolean) = Unit
@@ -80,6 +96,15 @@ class AvfBackend(
     private companion object {
         /** Presses in order, one at a time. */
         val buttons: ExecutorService = Executors.newSingleThreadExecutor()
+
+        /** How long a VM with display devices must stay up before they count as accepted. */
+        const val EARLY_STOP_MS = 1000L
+
+        fun defaultIo(install: Install): AvfIo =
+            if (install.settings.avfDisplay) {
+                val (w, h) = AvfLayout(install.dir).displaySize ?: (Scfb.DEFAULT_WIDTH to Scfb.DEFAULT_HEIGHT)
+                ScfbIo(w, h) { VmState.notice(it) }
+            } else AvfIo.None
     }
 }
 
@@ -88,7 +113,8 @@ class AvfBackend(
  * failing line says how to fix it, with the exact adb command where one exists.
  */
 object AvfSupport {
-    fun checks(ctx: Context): List<VmBackend.Check> {
+    /** [display]: the "Experimental AVF display" setting is on, so the setup needs its exemption too. */
+    fun checks(ctx: Context, display: Boolean = false): List<VmBackend.Check> {
         val pkg = ctx.packageName
         if (Build.VERSION.SDK_INT < 34) {
             return listOf(VmBackend.Check(false, "AVF needs Android 14 or later; this is Android ${Build.VERSION.RELEASE}"))
@@ -112,7 +138,7 @@ object AvfSupport {
         } else {
             VmBackend.Check(false, "Custom-VM API blocked by Android's hidden-API policy (" +
                 api.blocked.joinToString(limit = 3) { it.key } + "). Allow it over adb, then restart the app. " +
-                "This is a global setting:\n  ${exemptionCommand()}\n  adb shell am force-stop $pkg")
+                "This is a global setting:\n  ${exemptionCommand(display)}\n  adb shell am force-stop $pkg")
         }
         if (granted(AvfApi.PERM_MANAGE)) {
             val caps = runCatching { api.manager(ctx)?.let { api.capabilities(it) } }.getOrNull()
@@ -125,10 +151,26 @@ object AvfSupport {
         return out
     }
 
-    /** Host-side command that sets the exemption ([AvfApi.EXEMPTIONS]), quoted for a POSIX shell. */
-    fun exemptionCommand(): String =
+    /**
+     * Host-side command that sets the exemption ([AvfApi.EXEMPTIONS], plus [ScfbIo.EXEMPTIONS]
+     * for the experimental display), quoted for a POSIX shell.
+     */
+    fun exemptionCommand(display: Boolean = false): String =
         "adb shell settings put global hidden_api_blacklist_exemptions \"'" +
-            AvfApi.EXEMPTIONS.joinToString(",").replace("$", "\\$") + "'\""
+            (AvfApi.EXEMPTIONS + if (display) ScfbIo.EXEMPTIONS else emptyList()).joinToString(",").replace("$", "\\$") + "'\""
+
+    /**
+     * The experimental display's readiness. Never blocking: without it the VM boots console-only.
+     */
+    fun displayCheck(ctx: Context): VmBackend.Check {
+        val reason = ScfbIo.unavailable()
+            ?: return VmBackend.Check(true, "Experimental AVF display: shared framebuffer and touch available")
+        return VmBackend.Check(false,
+            ScfbIo.UNAVAILABLE + reason + ". The VM will boot console-only. The display needs the extended " +
+                "hidden-API exemption (a global setting); set it over adb, then restart the app:\n  " +
+                exemptionCommand(display = true) + "\n  adb shell am force-stop ${ctx.packageName}",
+            blocking = false)
+    }
 }
 
 /**
@@ -145,6 +187,8 @@ object AvfSupport {
  * disk.0.writable=true      #   read-only unless writable=true
  * memory_mib=2048           # optional guest RAM; default: the Guest RAM setting
  * cpus=host                 # optional, 1 or host; default: 1 if the vCPUs setting is 1, else host
+ * display=1125x2436         # optional: the screen size the guest is asked to draw, with the
+ *                           #   Experimental AVF display setting (default 1125x2436)
  * ```
  */
 class AvfLayout(val dir: File) {
@@ -161,6 +205,7 @@ class AvfLayout(val dir: File) {
     val params: List<String> get() = (prop("params") ?: DEFAULT_PARAMS).split(Regex("\\s+")).filter { it.isNotEmpty() }
     val memoryMib: Long? get() = prop("memory_mib")?.toLongOrNull()
     val cpus: String? get() = prop("cpus")
+    val displaySize: Pair<Int, Int>? get() = prop("display")?.let { Scfb.parseSize(it) }
 
     data class Disk(val file: File, val writable: Boolean)
 
@@ -187,6 +232,7 @@ class AvfLayout(val dir: File) {
             out += VmBackend.Check(false, "Disk images need the wider hidden-API exemption:\n  ${AvfSupport.exemptionCommand()}")
         }
         prop("cpus")?.takeIf { it != "1" && it != "host" }?.let { out += VmBackend.Check(false, "$MANIFEST: cpus must be 1 or host, not '$it'") }
+        prop("display")?.takeIf { Scfb.parseSize(it) == null }?.let { out += VmBackend.Check(false, "$MANIFEST: display must be WIDTHxHEIGHT (e.g. 1125x2436), not '$it'") }
         prop("memory_mib")?.takeIf { (it.toLongOrNull() ?: 0) <= 0 }?.let { out += VmBackend.Check(false, "$MANIFEST: memory_mib must be a positive number, not '$it'") }
         return out
     }
@@ -276,7 +322,7 @@ class AvfVm private constructor(
     private fun boot(ctx: Context, spec: AvfApi.Spec): Boolean {
         log("avf: $state")
         try {
-            val config = api.buildConfig(ctx, spec) { io.configure(it, log) }
+            val config = api.buildConfig(ctx, spec) { io.configure(it, spec.memoryBytes, log) }
             val v = api.create(manager, spec.name, config).also { vm = it }
             v.setCallback(callbacks, object : AvfApi.Listener {
                 override fun onStopped(reason: Int) {
@@ -309,6 +355,18 @@ class AvfVm private constructor(
         stopped.countDown()
         cleanup()
         return false
+    }
+
+    /**
+     * Waits up to [ms] for the VM to stop on its own. If it did (and not by powering off), cleans
+     * up like [pump] would and returns the stop reason; else null and the run goes on.
+     */
+    fun stoppedEarly(ms: Long): String? {
+        if (!stopped.await(ms, TimeUnit.MILLISECONDS)) return null
+        val r = stopReason
+        if (r == api.stopReasonShutdown) return null
+        cleanup()
+        return r?.let { api.stopReasonName(it) } ?: "no reason given"
     }
 
     override fun pump(onLine: (String) -> Unit): Int {

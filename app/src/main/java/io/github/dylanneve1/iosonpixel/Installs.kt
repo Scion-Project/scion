@@ -141,15 +141,15 @@ object Installs {
         deletableDirs(ctx, install).sumOf { d -> d.walkBottomUp().sumOf { f -> (if (f.isFile) f.length() else 0L).also { f.delete() } } }
 
     /**
-     * A one-off install for the debug-build developer hook: [base]'s settings, with [backend]
-     * and/or the folder [dir] instead of its own. Never saved; its sockets and logs use id "dev".
+     * A one-off install for the debug-build developer hook: [base]'s settings, with [backend],
+     * the folder [dir] and/or the Experimental AVF display setting [avfDisplay] instead of its own. Never saved; its sockets and logs use id "dev".
      */
-    fun developer(base: Install, backend: Backend?, dir: File?): Install = base.copy(
+    fun developer(base: Install, backend: Backend?, dir: File?, avfDisplay: Boolean? = null): Install = base.copy(
         id = DEVELOPER_ID,
         name = "Developer session",
         internalDir = dir?.absolutePath ?: base.internalDir,
         sharedDir = dir?.absolutePath ?: base.sharedDir,
-        settings = base.settings.copy(backend = backend ?: base.backend),
+        settings = base.settings.copy(backend = backend ?: base.backend, avfDisplay = avfDisplay ?: base.settings.avfDisplay),
         legacy = false,
     )
 
@@ -221,7 +221,10 @@ object InstallMigration {
 
     /** A fingerprint of the old preferences: settings and location. */
     fun seen(settings: VmSettings, vmInternal: Boolean): String =
-        encode(settings).put("vm_internal", vmInternal).toString()
+        encode(settings).apply { remove(KEY_AVF_DISPLAY) }.put("vm_internal", vmInternal).toString()
+
+    /** Per-install only (not in the old preferences), so it's left out of [seen] and kept by [resync]. */
+    private const val KEY_AVF_DISPLAY = "avf_display"
 
     /**
      * After a downgrade and re-upgrade: if the old preferences no longer match [seen] (what this
@@ -232,7 +235,10 @@ object InstallMigration {
         val now = seen(legacy.settings, legacy.vmInternal)
         if (seen == null || seen == now) return null
         if (list.none { it.legacy }) return null
-        return list.map { if (it.legacy) it.copy(settings = legacy.settings, internal = legacy.vmInternal) else it }
+        return list.map {
+            if (it.legacy) it.copy(settings = legacy.settings.copy(avfDisplay = it.settings.avfDisplay), internal = legacy.vmInternal)
+            else it
+        }
     }
 
     /** Internal and shared folders for a new install [id]. */
@@ -278,6 +284,7 @@ object InstallMigration {
         put("in_process", s.inProcess)
         put("security", s.security.id)
         put("extra_args", s.extraArgs)
+        put(KEY_AVF_DISPLAY, s.avfDisplay)
     }
 
     private fun decodeSettings(o: JSONObject): VmSettings {
@@ -292,6 +299,7 @@ object InstallMigration {
             inProcess = o.optBoolean("in_process", d.inProcess),
             security = Security.fromId(o.optString("security")) ?: d.security,
             extraArgs = o.optString("extra_args", d.extraArgs),
+            avfDisplay = o.optBoolean(KEY_AVF_DISPLAY, d.avfDisplay),
         )
     }
 }
