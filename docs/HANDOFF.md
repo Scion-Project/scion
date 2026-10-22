@@ -9,7 +9,7 @@ future work.
 
 | Repo | Branch | Role |
 |---|---|---|
-| `dylanneve1/ios-on-pixel` | `main` | This repo: Android app, build scripts, tools, docs |
+| `dylanneve1/scion` | `main` | This repo: Android app, build scripts, tools, docs |
 | `dylanneve1/Inferno` | `pixel` | Fork of `ChefKissInc/Inferno` with the Android/Tensor patches; submodule at `third_party/inferno` |
 | `dylanneve1/qemu-ios` | — | Fork of `devos50/qemu-ios` (legacy iPod/iPhone emulator), for reference only |
 | `dylanneve1/darwin-vm` | — | Fork of `jprx/darwin-vm` (boots modern iOS to a shell, no UI), for reference only |
@@ -125,7 +125,7 @@ needed three more things beyond the above:
 * **Backends:** the VM engine sits behind `VmBackend` (start/stop, readiness
   checks, display, buttons), chosen by `VmSettings.backend`. `QemuBackend` is
   the only implementation; AVF is listed on the main screen but disabled
-  until ios-on-pixel-avf has something that boots. Everything below is the
+  until scion-avf has something that boots. Everything below is the
   QEMU backend.
 * QEMU runs as a **child process** (`libqemu-system-aarch64.so` in
   `nativeLibraryDir`, `useLegacyPackaging = true` so it's extracted and
@@ -209,7 +209,7 @@ frankel/blazer/mustang/rango). Paths are in that repo.
   `pixel/lga/*/config_kernel.h` lists `RGX_BVNC_CORE_KM_HEADER "cores/rgxcore_km_71.2.2448.1212.h"`.
 * GKI `CONFIG_KVM=y` (pKVM), exposed to apps through AVF only (crosvm, adb-granted
   development permissions). The QEMU/TCG backend stays the default; AVF is explored in
-  [ios-on-pixel-avf](https://github.com/dylanneve1/ios-on-pixel-avf).
+  [scion-avf](https://github.com/dylanneve1/scion-avf).
 
 ## Patches on `dylanneve1/Inferno@pixel`
 
@@ -246,7 +246,7 @@ On `pixel-dev` (paths are `hw/arm/…` there), additionally:
 ## Reproduce the build
 
 ```sh
-git clone --recurse-submodules https://github.com/dylanneve1/ios-on-pixel
+git clone --recurse-submodules https://github.com/dylanneve1/scion
 cd ios-on-pixel
 brew install meson ninja pkgconf cmake    # plus Android SDK + NDK r28
 native/build-android.sh                   # deps + QEMU → app/src/main/jniLibs

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">iOS on Pixel</string>
+    <string name="app_name">Scion</string>
     <string name="notif_channel">Virtual machine</string>
     <string name="notif_running">VM running</string>
     <string name="notif_stop">Stop</string>

@@ -1,4 +1,6 @@
-# iOS on Pixel
+# Scion
+
+*In grafting, the scion is the branch joined onto a rootstock: here, Apple's stack grafted onto Android.*
 
 Run an emulated iPhone 11 on a Google Pixel 10, using a Tensor-tuned Android
 port of the [Inferno](https://github.com/ChefKissInc/Inferno) QEMU fork.
@@ -93,8 +95,8 @@ current limits. In short:
    native/build-android.sh            # first run builds deps too (~10 min)
    ./gradlew installDebug
    ```
-4. Open **iOS on Pixel**, check that everything is ✓, keep vCPUs at 4
-   ([#33](https://github.com/dylanneve1/ios-on-pixel/issues/33)), then tap
+4. Open **Scion**, check that everything is ✓, keep vCPUs at 4
+   ([#33](https://github.com/dylanneve1/scion/issues/33)), then tap
    **Start**. If it fails, tap **Share debug bundle** and send the zip.
 
 ## Tensor G5 notes
@@ -123,7 +125,7 @@ GPU: Imagination (Rogue-family DDK, BVNC `71.2.2448.1212`), 396–1094 MHz.
   crosvm, and Apple-only CPU instructions don't exist on Tensor cores, so it
   isn't a drop-in replacement. The default backend is QEMU's TCG JIT; the AVF
   backend is being explored in
-  [ios-on-pixel-avf](https://github.com/dylanneve1/ios-on-pixel-avf) and will
+  [scion-avf](https://github.com/dylanneve1/scion-avf) and will
   become a selectable option in the app (#19).
 
 [docs/ROADMAP.md](docs/ROADMAP.md) has the performance plan, including what
