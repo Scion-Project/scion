@@ -120,6 +120,10 @@ needed three more things beyond the above:
   -trace apple_sep_aess_* -trace apple_sep_ssc_* -trace apple_sep_pka_* -d guest_errors,unimp -D /data/user/0/<pkg>/files/sep-trace.log
   ```
 
+## Engine bump
+
+Engine bump (`third_party/inferno` → pyre `f6ec19c`, master): GPU milestone-0 handshake behind `-M t8030,gpu=on` (off by default), touch controller accepts data-channel packets silently (pyre#50), SEP trace points + bounds fix (pyre#51).
+
 ## Architecture recap
 
 * **Installs:** the app holds a list of VMs (`Installs.kt`). Each `Install`
