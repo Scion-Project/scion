@@ -78,6 +78,21 @@ class AvfApi private constructor(
         val memoryBytes: Long,
         /** One vCPU per host CPU instead of a single vCPU: the only two topologies the API offers. */
         val matchHostCpus: Boolean,
+        /** A virtio-gpu with 3D (crosvm --gpu); null = none. */
+        val gpu: Gpu? = null,
+    )
+
+    /**
+     * crosvm's virtio-gpu, through the @hide VirtualMachineCustomImageConfig.GpuConfig: on the
+     * Pixel 10 the backend is gfxstream, which draws with the phone's GPU (EGL/GLES, or Vulkan).
+     */
+    data class Gpu(
+        val backend: String = "gfxstream",
+        val contextTypes: List<String> = listOf("gfxstream-gles"),
+        val egl: Boolean = true,
+        val gles: Boolean = true,
+        val surfaceless: Boolean = true,
+        val vulkan: Boolean = false,
     )
 
     data class Disk(val path: String, val writable: Boolean)
@@ -119,6 +134,7 @@ class AvfApi private constructor(
             call("ImageBuilder.addDisk", img, disk)
         }
         configure(ImageBuilder(img))
+        spec.gpu?.let { setGpu(img, it) }
         val image = call("ImageBuilder.build", img)
 
         val c = invokeCtor("ConfigBuilder.<init>", ctor("ConfigBuilder"), ctx)
@@ -131,6 +147,28 @@ class AvfApi private constructor(
         call("ConfigBuilder.setDebugLevel", c, constant("Config", "DEBUG_LEVEL_FULL", 1))
         call("ConfigBuilder.setVmOutputCaptured", c, true)
         return call("ConfigBuilder.build", c)!!
+    }
+
+    /** GpuConfig.Builder by reflection (not in [MEMBERS]: optional, and nested in a hidden class). */
+    private fun setGpu(img: Any, gpu: Gpu) {
+        try {
+            val cls = Class.forName("$PKG.VirtualMachineCustomImageConfig\$GpuConfig\$Builder")
+            var b: Any = cls.getConstructor().newInstance()
+            fun set(name: String, arg: Any) {
+                val m = b.javaClass.methods.first { it.name == name && it.parameterTypes.size == 1 }
+                b = m.invoke(b, arg) ?: b
+            }
+            set("setBackend", gpu.backend)
+            set("setContextTypes", gpu.contextTypes.toTypedArray())
+            set("setRendererUseEgl", gpu.egl)
+            set("setRendererUseGles", gpu.gles)
+            set("setRendererUseSurfaceless", gpu.surfaceless)
+            set("setRendererUseVulkan", gpu.vulkan)
+            val config = b.javaClass.getMethod("build").invoke(b)
+            img.javaClass.methods.first { it.name == "setGpuConfig" && it.parameterTypes.size == 1 }.invoke(img, config)
+        } catch (t: Throwable) {
+            throw wrap("GpuConfig", t)
+        }
     }
 
     // ---- VirtualMachine -------------------------------------------------------
