@@ -50,6 +50,8 @@ object Installs {
     private const val KEY_CURRENT = "current"
     private const val KEY_NEXT_ID = "next_id"
     private const val KEY_BAD = "list_unreadable"
+    /** The old preferences as this app last wrote or read them (see [InstallMigration.resync]). */
+    private const val KEY_LEGACY_SEEN = "legacy_seen"
 
     private val lock = Any()
 
@@ -95,6 +97,7 @@ object Installs {
         if (install.legacy) {
             install.settings.save(ctx)
             AppPaths.setLegacyVmInternal(ctx, install.internal)
+            prefs(ctx).edit().putString(KEY_LEGACY_SEEN, InstallMigration.seen(install.settings, install.internal)).apply()
         }
     }
 
@@ -105,7 +108,10 @@ object Installs {
     fun setInternal(ctx: Context, id: String, internal: Boolean) = synchronized(lock) {
         val list = load(ctx).map { if (it.id == id) it.copy(internal = internal) else it }
         check(prefs(ctx).edit().putString(KEY_LIST, InstallMigration.encode(list)).commit()) { "cannot save the VM location" }
-        list.firstOrNull { it.id == id && it.legacy }?.let { AppPaths.setLegacyVmInternal(ctx, internal) }
+        list.firstOrNull { it.id == id && it.legacy }?.let {
+            AppPaths.setLegacyVmInternal(ctx, internal)
+            prefs(ctx).edit().putString(KEY_LEGACY_SEEN, InstallMigration.seen(it.settings, internal)).commit()
+        }
     }
 
     /** Removes [id] from the list (never the last one). Files are only deleted by [deleteFiles]. */
@@ -160,23 +166,33 @@ object Installs {
         val p = prefs(ctx)
         val raw = p.getString(KEY_LIST, null)
         if (raw != null) {
-            InstallMigration.decode(raw)?.takeIf { it.isNotEmpty() }?.let { return it }
+            InstallMigration.decode(raw)?.takeIf { it.isNotEmpty() }?.let { list ->
+                // An older (single-VM) build may have run in between and changed the old prefs.
+                val legacy = legacy(ctx)
+                val now = InstallMigration.seen(legacy.settings, legacy.vmInternal)
+                val synced = InstallMigration.resync(list, legacy, p.getString(KEY_LEGACY_SEEN, null)) ?: return list
+                p.edit().putString(KEY_LIST, InstallMigration.encode(synced)).putString(KEY_LEGACY_SEEN, now).commit()
+                return synced
+            }
             // Unreadable: keep it for a bug report, then rebuild from the old preferences. The
             // rebuild only records paths; no VM folder is read or written either way.
             p.edit().putString(KEY_BAD, raw).remove(KEY_LIST).commit()
         }
-        val legacy = InstallMigration.Legacy(
-            settings = VmSettings.load(ctx),
-            vmInternal = AppPaths.legacyVmInternal(ctx),
-            internalVmDir = AppPaths.legacyInternalVmDir(ctx),
-            sharedVmDir = AppPaths.legacySharedVmDir(ctx),
-        )
+        val legacy = legacy(ctx)
         val list = listOf(InstallMigration.fromLegacy(legacy))
         // commit(): the migration happens once, and must be on disk before anything else runs.
         p.edit().putString(KEY_LIST, InstallMigration.encode(list)).putString(KEY_CURRENT, list.first().id)
-            .putInt(KEY_NEXT_ID, 2).commit()
+            .putInt(KEY_NEXT_ID, 2).putString(KEY_LEGACY_SEEN, InstallMigration.seen(legacy.settings, legacy.vmInternal))
+            .commit()
         return list
     }
+
+    private fun legacy(ctx: Context) = InstallMigration.Legacy(
+        settings = VmSettings.load(ctx),
+        vmInternal = AppPaths.legacyVmInternal(ctx),
+        internalVmDir = AppPaths.legacyInternalVmDir(ctx),
+        sharedVmDir = AppPaths.legacySharedVmDir(ctx),
+    )
 }
 
 /**
@@ -202,6 +218,22 @@ object InstallMigration {
         settings = l.settings,
         legacy = true,
     )
+
+    /** A fingerprint of the old preferences: settings and location. */
+    fun seen(settings: VmSettings, vmInternal: Boolean): String =
+        encode(settings).put("vm_internal", vmInternal).toString()
+
+    /**
+     * After a downgrade and re-upgrade: if the old preferences no longer match [seen] (what this
+     * app last wrote or read), an older build changed them, so the migrated install adopts them.
+     * Returns the updated list, or null if nothing changed. Still touches no file.
+     */
+    fun resync(list: List<Install>, legacy: Legacy, seen: String?): List<Install>? {
+        val now = seen(legacy.settings, legacy.vmInternal)
+        if (seen == null || seen == now) return null
+        if (list.none { it.legacy }) return null
+        return list.map { if (it.legacy) it.copy(settings = legacy.settings, internal = legacy.vmInternal) else it }
+    }
 
     /** Internal and shared folders for a new install [id]. */
     fun dirsFor(filesDir: File, sharedRoot: File, id: String) =

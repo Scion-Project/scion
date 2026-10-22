@@ -100,4 +100,19 @@ class InstallMigrationTest {
         assertEquals(Security.DEFAULT, s.security)
         assertEquals(VmSettings.MAX_RAM_GB, s.ramGb)
     }
+
+    @Test fun olderBuildChangesAreAdoptedAfterReupgrade() {
+        val (_, vm, shared) = fakeApp()
+        val legacy = InstallMigration.Legacy(userSettings, true, vm, shared)
+        val list = listOf(InstallMigration.fromLegacy(legacy))
+        val seen = InstallMigration.seen(userSettings, true)
+        // Nothing changed: no resync.
+        assertNull(InstallMigration.resync(list, legacy, seen))
+        // An older build changed the old prefs in between.
+        val changed = legacy.copy(settings = userSettings.copy(smp = 2, inProcess = false))
+        val synced = InstallMigration.resync(list, changed, seen)!!
+        assertEquals(2, synced.single().settings.smp)
+        assertEquals(false, synced.single().settings.inProcess)
+        assertEquals(vm.absolutePath, synced.single().dir.absolutePath)
+    }
 }
