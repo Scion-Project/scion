@@ -330,6 +330,9 @@ adb shell am start -n $PKG/.MainActivity --es backend avf \
   --es vm_dir /data/user/0/$PKG/files/<folder> --ez start true
 ```
 
+Add `--ez avf_display true` (or `false`) to override the experimental display
+setting for that session.
+
 Files the app reads must be owned by the app. A folder that `adb shell mkdir`
 created belongs to shell, and the app can't read what's pushed into it. Push
 into a folder the app made (open the app once first), or stream files in with

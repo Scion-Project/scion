@@ -141,15 +141,15 @@ object Installs {
         deletableDirs(ctx, install).sumOf { d -> d.walkBottomUp().sumOf { f -> (if (f.isFile) f.length() else 0L).also { f.delete() } } }
 
     /**
-     * A one-off install for the debug-build developer hook: [base]'s settings, with [backend]
-     * and/or the folder [dir] instead of its own. Never saved; its sockets and logs use id "dev".
+     * A one-off install for the debug-build developer hook: [base]'s settings, with [backend],
+     * the folder [dir] and/or the Experimental AVF display setting [avfDisplay] instead of its own. Never saved; its sockets and logs use id "dev".
      */
-    fun developer(base: Install, backend: Backend?, dir: File?): Install = base.copy(
+    fun developer(base: Install, backend: Backend?, dir: File?, avfDisplay: Boolean? = null): Install = base.copy(
         id = DEVELOPER_ID,
         name = "Developer session",
         internalDir = dir?.absolutePath ?: base.internalDir,
         sharedDir = dir?.absolutePath ?: base.sharedDir,
-        settings = base.settings.copy(backend = backend ?: base.backend),
+        settings = base.settings.copy(backend = backend ?: base.backend, avfDisplay = avfDisplay ?: base.settings.avfDisplay),
         legacy = false,
     )
 
