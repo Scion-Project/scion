@@ -21,10 +21,11 @@ Issue #48. Measured on the Android **emulator** (`sdk_gphone64_arm64`, 8 host co
   than the one above. On the microbenchmarks, an indirect-branch return is 29% cheaper, a
   `TPIDR_EL1` read goes from about 24 ns to under 1 ns, and storage-only system-register
   writes no longer end the TB. See [TCG optimisations](#tcg-optimisations-2026-10-22).
-- **Compiler options (#77, below):** PGO (profile from the restore boot) takes 4.5% off the
-  boot's wall time and host CPU, and 6.4% CPU with ThinLTO. `-O3` and ThinLTO alone are
-  within noise for speed; ThinLTO makes the libraries 11% smaller. All are opt-in
-  (`QEMU_PGO_PROFILE`, `QEMU_LTO`, `QEMU_OPT`, `QEMU_TUNE`); the default build is unchanged.
+- **Compiler options (#77, below):** PGO (profile from the restore boot) takes 5.9% off the
+  boot's wall time and 8.1% off its host CPU on current Inferno, or 6.3% and 10.0% with
+  ThinLTO. ThinLTO alone gives ≤3.6% (within noise) and makes the libraries 11% smaller; `-O3`
+  doesn't help. All are opt-in (`QEMU_PGO_PROFILE`, `QEMU_LTO`, `QEMU_OPT`, `QEMU_TUNE`); the
+  default build is unchanged.
 
 ## Setup
 
@@ -278,37 +279,70 @@ files are byte-identical to the old ones, so CI and the shipped APK build exactl
 A build tree reconfigures itself when any of these (or the tuning) change, so switching
 between variants never silently reuses old flags.
 
-### Results (Oct 2026, Inferno `180389d`)
+### Results (2026-10-22)
 
-Measured on the emulator (8 Apple-silicon host cores) with `tools/restore_bench.py --smp 4`,
-one run per variant per round, interleaved, 8 rounds, under the shared bench lock. Each
-"base" is the default build in the same batch. Medians:
+All measured on the Mac mini's emulator (8 Apple-silicon host cores) under the shared bench
+lock. Variants run interleaved, one run per variant per round, and each "base" is the
+default build in the same batch. Restore boot: `tools/restore_bench.py --smp 4` with the
+`wfi` SEP placeholder. Microbenchmarks: the firmware-free `a13-test` TCG workloads (Inferno's
+`hw/arm/tests/tcg_bench.S`), which stand in for the boot's hot paths; none of them is the
+PGO training run.
 
-| Variant | `bsd_root` | `waiting_host` | host CPU (user+sys) | Range, `waiting_host` |
+**Current Inferno (`3f2e61d`, with the TCG fast paths), restore boot, 10 rounds, medians:**
+
+| Variant | `bsd_root` | `waiting_host` | host CPU (user+sys) | Range, `waiting_host` | Range, CPU |
+|---|---|---|---|---|---|
+| base (`-O2`) | 3.91 s | 13.80 s | 12.15 s | 13.42–15.58 s ¹ | 11.68–14.24 s ¹ |
+| `QEMU_LTO=thin` | −1.5% | −1.6% | −3.6% | 13.29–15.85 s | 11.31–14.29 s |
+| PGO | −7.8% | **−5.9%** (12.99 s) | **−8.1%** (11.16 s) | 12.82–15.44 s | 10.80–13.82 s |
+| PGO + ThinLTO | −10.2% | **−6.3%** (12.93 s) | **−10.0%** (10.93 s) | 12.66–15.09 s | 10.64–13.41 s |
+| PGO + ThinLTO, stale profile ² | −7.9% | −3.9% | −6.1% | 12.93–15.86 s | 11.03–14.33 s |
+
+¹ 9 of 10 runs; one base run panicked (see below).
+² The profile trained on the older Inferno `180389d`, used on `3f2e61d` unchanged.
+
+Microbenchmarks on `3f2e61d`, 3 reps, median QEMU process time, change against base:
+
+| Workload | base | ThinLTO | PGO | PGO+ThinLTO |
+|---|---|---|---|---|
+| w1 hot BL/RET (jump-cache hits) | 2.13 s | +0.5% | **−18.8%** | **−19.7%** |
+| w2 BLR/RET over 4096 targets | 4.07 s | −3.9% | −6.9% | −6.9% |
+| w3 `MRS TPIDR_EL1` | 0.21 s | (too short to time) | | |
+| w4 ALU loop (control) | 2.87 s | −0.7% | 0.0% | −1.0% |
+| w5 w2 + TB invalidations | 1.95 s | +3.1% | −1.0% | −2.6% |
+
+**Earlier Inferno (`180389d`), restore boot, 8 rounds, medians** (two batches; `-O3` was
+only in the first, where base was 20.75 s, 23.05 s CPU):
+
+| Variant | `bsd_root` | `waiting_host` | host CPU | Range, `waiting_host` |
 |---|---|---|---|---|
 | base (`-O2`) | 4.73 s | 20.80 s | 23.09 s | 20.52–21.21 s |
-| `QEMU_OPT=-O3` ¹ | −3.3% | −0.6% | +0.7% | 20.50–20.91 s |
+| `QEMU_OPT=-O3` | −3.3% | −0.6% | +0.7% | 20.50–20.91 s |
 | `QEMU_LTO=thin` | −4.2% | −1.4% | −1.7% | 20.29–20.91 s |
-| `-O3` + ThinLTO ¹ | −1.6% | −1.5% | −0.8% | 19.98–20.87 s |
-| PGO | −7.3% | **−4.5%** (19.85 s) | **−4.5%** (22.06 s) | 19.51–20.49 s |
-| PGO + ThinLTO | −7.3% | **−5.0%** (19.75 s) | **−6.4%** (21.61 s) | 19.53–20.72 s |
+| `-O3` + ThinLTO | −1.6% | −1.5% | −0.8% | 19.98–20.87 s |
+| PGO | −7.3% | −4.5% | −4.5% | 19.51–20.49 s |
+| PGO + ThinLTO | −7.3% | −5.0% | −6.4% | 19.53–20.72 s |
 
-¹ From the first batch (base 20.75 s, 23.05 s CPU); the rest are from the second.
-
-The firmware-free `a13-test` TCG microbenchmarks (Inferno's `hw/arm/tests/tcg_bench.S`:
-proxies for the boot's hot paths; none of them was the PGO training run). Same emulator,
-5 interleaved reps, median QEMU process wall time, change against base:
+Microbenchmarks on `180389d`, 5 reps:
 
 | Workload | base | `-O3` | ThinLTO | `-O3`+ThinLTO | PGO | PGO+ThinLTO |
 |---|---|---|---|---|---|---|
-| w1 hot BL/RET (jump-cache hits) | 2.79 s | −5.0% | +0.7% | −4.7% | −0.7% | −3.6% |
-| w2 BLR/RET over 4096 targets | 7.67 s | −0.4% | +0.1% | −0.7% | **−10.2%** | **−7.7%** |
+| w1 hot BL/RET | 2.79 s | −5.0% | +0.7% | −4.7% | −0.7% | −3.6% |
+| w2 BLR/RET over 4096 targets | 7.67 s | −0.4% | +0.1% | −0.7% | −10.2% | −7.7% |
 | w3 `MRS TPIDR_EL1` | 7.67 s | +1.4% | 0.0% | −0.8% | +0.1% | +0.3% |
 | w4 ALU loop (control) | 2.82 s | −1.1% | +0.4% | −1.1% | −1.1% | −0.7% |
-| w5 w2 + TB invalidations | 3.01 s | −1.3% | −0.7% | −2.3% | **−9.0%** | **−7.6%** |
+| w5 w2 + TB invalidations | 3.01 s | −1.3% | −0.7% | −2.3% | −9.0% | −7.6% |
 
-Library sizes, stripped, with gzip -6 size in brackets. The APK stores them compressed
-(`useLegacyPackaging`), and the app extracts them on install:
+**A guest panic that isn't from these options.** Two of about 90 restore boots on `3f2e61d`
+panicked the same way: one default build and one ThinLTO build, the latter while the host was
+overloaded (load ≈20). The panic is `Kernel data abort` at `pc 0xfffffff0099126d4`,
+`far 0x18`, right after `IOMFB::UPPipe_H11P::rt_bandwidth_setup(): bandwidth values not
+found` → `start_hardware failed`. None of the 64 boots on `180389d` did this, so it is worth a
+look on its own.
+
+Library sizes, stripped, with gzip -6 size in brackets (`180389d`; `3f2e61d` is within
+0.1 MB). The APK stores them compressed (`useLegacyPackaging`), and the app extracts them on
+install:
 
 | Variant | `libqemu-system-aarch64.so` | `libqemu-system-aarch64-shared.so` |
 |---|---|---|
@@ -327,15 +361,17 @@ Build time (4-core Linux VPS, both QEMU variants): 2:26 base, 2:29 ThinLTO.
 **Conclusions.**
 
 - **`-O3` doesn't help the boot.** It is within noise on the restore boot and 2.6% bigger,
-  and of the microbenchmarks it only speeds up w1 (5%).
-- **ThinLTO is neutral to slightly positive for speed (≤2%, within noise) and saves 11% in
-  size.** All 64 restore boots in these batches (16 with ThinLTO alone, 8 more with PGO + ThinLTO) reached `waiting_host` with no panic.
-- **PGO is the only clear speed win**: 4.5% off the restore boot in wall time and CPU, and
-  6.4% CPU with ThinLTO. The ranges barely overlap with base. It also takes 8–10% off the
-  indirect-branch and TB-invalidation microbenchmarks it was not trained on. But the profile was
-  trained on this same restore boot, and it is tied to an Inferno revision (functions that
-  changed lose their profile), so it stays opt-in. A default would need a profile kept in step
-  with the submodule, and training on a normal boot too.
+  and of the microbenchmarks it only speeds up w1 (5%). It wasn't carried forward.
+- **ThinLTO is a small win at most**: 1.4–1.6% wall time and 1.7–3.6% CPU, ranges overlapping
+  base. It does save 11% in size.
+- **PGO is the clear speed win**: on current Inferno, 5.9% off the restore boot and 8.1% off
+  its host CPU, or 6.3% and 10.0% with ThinLTO. It also cuts the indirect-branch microbenchmarks
+  by 7–20%. Caveats:
+  - The profile was trained on this same restore boot.
+  - The profile is tied to an Inferno revision. A profile one bump old still gave 3.9% and
+    6.1%, but it decays with each bump.
+  - So it stays opt-in. A default would need a profile regenerated on every submodule bump
+    (a CI job could do it, given a device runner and kit) and training on a normal boot too.
 - Nothing is on by default.
 
 **Tuning for Tensor G5 (untested on target).** The emulator's host is Apple silicon. Its
@@ -358,8 +394,8 @@ QEMU_PGO_PROFILE=restore.profdata QEMU_LTO=thin native/build-android.sh qemu
 ```
 
 The `.profraw` is written when QEMU exits normally (`restore_bench.py` stops it with
-SIGINT; SIGKILL loses it). The profile above came from 3 `-smp 4` restore boots of the
-instrumented build on the emulator (27–31 s each, versus 21 s). The steps were run by hand:
+SIGINT; SIGKILL loses it). Each profile above came from 3 `-smp 4` restore boots of the
+instrumented build on the emulator (27–31 s each on `180389d` versus 21 s uninstrumented, 17 s on `3f2e61d`). The steps were run by hand:
 build on Linux, boot on the Mac's emulator, merge back on Linux. The profile holds only
 QEMU's branch and call counts, keyed by QEMU function names, so it's no Apple data. Still,
 don't commit one: it goes stale with every Inferno bump.
