@@ -175,6 +175,7 @@ needed three more things beyond the above:
 * **Two TCG speed-ups are on by default and can be turned off for comparison:**
   `-accel tcg,native-fp=off` (guest FP on softfloat instead of the host FPU) and
   `-accel tcg,asid-tlbs=0` (drop TLBs on every ASID switch, the old behaviour).
+  `-accel tcg,x-tlb-bits=6` restores the old 64-entry softmmu TLB floor (default 10).
 * **Host toolchain gotcha on this Mac:** macOS 27 updated the Command Line
   Tools SDK, but `xcode-select` points at Xcode 26.0, whose linker can't read
   the new SDK's `.tbd` files. `build-android.sh` probes for a working host
