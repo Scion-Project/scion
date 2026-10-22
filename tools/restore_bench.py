@@ -124,7 +124,7 @@ def qemu_command(a, d, uplink, extra=()):
     machine = ",".join([
         "t8030", "trustcache=trustcache", "sep-fw=sep_fw", "sep-rom=sep_rom", "kaslr-off=true",
         f"usb-uplink-addr={uplink}"])
-    args = [f"{d}/{QEMU_NAME}", "-M", machine, "-accel", f"tcg,thread=multi,tb-size={a.tb_size}",
+    args = [f"{d}/{QEMU_NAME}", "-M", machine, "-accel", f"tcg,thread=multi,tb-size={a.tb_size}" + (f",{a.accel_opts}" if a.accel_opts else ""),
             "-kernel", "kernel", "-dtb", "dtb", "-initrd", "ramdisk", "-append", APPEND,
             "-smp", str(a.smp), "-m", a.ram, "-display", "none", "-monitor", "none",
             "-serial", "stdio", "-snapshot", "-pidfile", f"{d}/qemu.pid",
@@ -356,6 +356,8 @@ def main():
     ap.add_argument("--smp", type=int, default=4, help="vCPUs incl. SEP (default 4; 7 hits #33 on Android)")
     ap.add_argument("--ram", default="2G")
     ap.add_argument("--tb-size", type=int, default=1024, help="TCG translation cache MiB (app default)")
+    ap.add_argument("--accel-opts", default="",
+                    help="extra -accel tcg options, comma-separated (e.g. native-int=on)")
     ap.add_argument("--timeout", type=int, default=180, help="seconds per run")
     ap.add_argument("--uplink", default="auto",
                     help="USB uplink addr; 'auto' (default) picks a free 127.0.0.1 port in 18030-18099 per run")
