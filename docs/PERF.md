@@ -21,6 +21,13 @@ Issue #48. Measured on the Android **emulator** (`sdk_gphone64_arm64`, 8 host co
   than the one above. On the microbenchmarks, an indirect-branch return is 29% cheaper, a
   `TPIDR_EL1` read goes from about 24 ns to under 1 ns, and storage-only system-register
   writes no longer end the TB. See [TCG optimisations](#tcg-optimisations-2026-10-22).
+- **Update 2026-10-22 (Inferno 3f2e61d → 2a65516): guest FP on the host FPU and ASID TLB
+  contexts.** Native FP (Inferno #30, #32, #33, #38, on by default, `-accel tcg,native-fp=off`
+  turns it off) takes the vector-FP microbenchmark from 3.72 s to 0.08 s and the Linux FP
+  workloads 2-4x faster. ASID TLB contexts (Inferno #31, #36, `-accel tcg,asid-tlbs=0` turns
+  them off) stop QEMU refilling its TLB and jump cache on every address-space switch: a KPTI
+  Linux system call is 6.1x cheaper. **The restore boot is unchanged by both** (little FP, 46
+  ASID switches/s). See [Native FP and ASID TLB contexts](#native-fp-and-asid-tlb-contexts-2026-10-22).
 - **Compiler options (#77, below):** PGO (profile from the restore boot) takes 5.9% off the
   boot's wall time and 8.1% off its host CPU on current Inferno, or 6.3% and 10.0% with
   ThinLTO. ThinLTO alone gives ≤3.6% (within noise) and makes the libraries 11% smaller; `-O3`
@@ -207,6 +214,52 @@ cores.
 - **Host-side microbenchmarks on the Mac are unreliable.** Single runs on Apple silicon
   were bimodal (2.0 s or 7.6 s for the same binary and workload), probably from P/E-core
   placement. The emulator's medians agreed within ±2%.
+
+## Native FP and ASID TLB contexts (2026-10-22)
+
+Inferno 3f2e61d → 2a65516, each change merged with CI green and boot-validated. Both follow
+from Inferno's `docs/SAME-ISA-FASTPATH.md` (where TCG's time goes on an AArch64 host): FP
+was 62–79% of vCPU time in softfloat on FP code, and a KPTI Linux spent 61% of its system
+calls refilling the softmmu TLB and jump cache.
+
+| PR | Change |
+|---|---|
+| [Inferno#30](https://github.com/dylanneve1/Inferno/pull/30), [#32](https://github.com/dylanneve1/Inferno/pull/32), [#33](https://github.com/dylanneve1/Inferno/pull/33), [#38](https://github.com/dylanneve1/Inferno/pull/38) | Guest FP/SIMD runs on the host FPU when the guest FPCR is in the host's mode (RNE, no FZ/DN/AH, no traps): vector and scalar FADD/FSUB/FMUL/FMLA/FDIV/…, emitted inline as host FP instructions; anything else stays on softfloat. A startup self-test compares every native kernel with softfloat and falls back if any differs. **On by default** on AArch64 hosts; `-accel tcg,native-fp=off` turns it off. Docs: Inferno `docs/NATIVE-FP.md` |
+| [Inferno#34](https://github.com/dylanneve1/Inferno/pull/34) | SPRR configuration/permission writes from EL1 flush the TLB when they change the value (entries kept the previous thread's permissions) |
+| [Inferno#37](https://github.com/dylanneve1/Inferno/pull/37) | The TLB's `n_used_entries` no longer wraps below zero (it made TLBs double for no reason: 46 of 164 resizes per boot) |
+| [Inferno#31](https://github.com/dylanneve1/Inferno/pull/31), [#36](https://github.com/dylanneve1/Inferno/pull/36) | **ASID TLB contexts**: on a TTBR ASID switch the outgoing TLBs and jump cache are kept aside (8 per vCPU) and swapped back in when the guest returns, instead of being dropped and refilled. Kept-aside copies get every invalidation the live ones get. `-accel tcg,asid-tlbs=0` turns it off. Docs: Inferno `docs/ASID-TLB.md` |
+
+**Microbenchmarks** (`run-a13-bench.py`, a13-test, Android emulator, median of 5):
+
+| Workload | before | after |
+|---|---|---|
+| w7: 48M vector FMLA/FMUL/FADD | 3.72 s | **0.08 s (46x)** |
+| w8: scalar FP mix | 0.71 s | 0.31 s (2.3x) |
+| w9: 2M ASID switches, KPTI-style | 7.55 s | **0.98 s (7.7x)** (2.13 s with TLBs only, `x-asid-jc=off`) |
+| w1 / w2 / w4 (controls) | 2.19 / 3.96 / 2.88 s | 2.15 / 4.00 / 2.90 s |
+
+**Linux guest** (upstream QEMU 10.2.2 with the changes ported, `-M virt`, macOS host, median
+of 3; native times from the same binaries on the emulator): `mem` (double triad) 6.26 → 1.70 s
+(3.7x, native 0.22 s), `simd` 7.06 → 3.37 s (2.1x, native 0.32 s); with KASLR (KPTI), `sys`
+(1.6M `getppid`) **37.4 → 6.1 s (6.1x)**, 23 → 3.8 µs per system call (`nokaslr` 4.9 s),
+`pf` 5.90 → 4.40 s; `int`, `chase`, CoreMark unchanged or slightly faster.
+
+**Restore boot** (`restore_bench.py`, `-smp 4`, `wfi` SEP placeholder, 10 interleaved runs per
+variant, CI Android binaries):
+
+| | `waiting_host` | host CPU (user + sys) |
+|---|---|---|
+| Inferno a7967b7 (native FP on, before ASID contexts and #37) | 13.82 s | 11.96 s |
+| + #37, `asid-tlbs=0` | 13.74 s | 12.03 s |
+| + ASID TLB contexts, `x-asid-jc=off` | 13.83 s | 12.03 s |
+| + jump caches (= 2a65516 default) | 13.68 s | 11.96 s |
+| 2a65516 as bumped here (this PR's CI APK) | BUMP_BOOT | BUMP_CPU |
+
+No change, as expected: the restore boot runs little FP code, and XNU switches ASID only
+about 46 times a second there (553 switches in a 10 s host boot) and maps its kernel global,
+so its switches were already cheap. Native FP on: 21/21 boots identical milestones (#38).
+ASID contexts on: 50/50 boots identical milestones, no panic. The `Kernel data abort` flake at
+pc `…99126d4` (above) still turns up on unmodified builds.
 
 ## Optimisation ideas, ranked
 
