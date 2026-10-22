@@ -133,7 +133,7 @@ runs on the same emulator, under a lock so runs never overlap.
 | [Inferno#27](https://github.com/dylanneve1/pyre/pull/27) | `hw/arm/tests/run-a13-bench.py` + `tcg_bench.S`: the microbenchmarks below, bare metal on the `a13-test` machine, no Apple code |
 | [Inferno#28](https://github.com/dylanneve1/pyre/pull/28) | t8030 keeps the SEP core powered off when its ROM can only idle (a loop of only WFI/WFE/NOP/YIELD/`B`, like the `wfi` and `b .` placeholders), so placeholder SEP inputs no longer spin a host core. Real SEPROMs are never matched. See [below](#placeholder-sep-roms-inferno28) |
 
-**Reliability.** Inferno#41 (IOMFB simulator-check race) removes a ~2–3% boot-time guest panic (`rt_bandwidth_setup`, data abort); no performance change. See [issue #100](https://github.com/dylanneve1/ios-on-pixel/issues/100).
+**Reliability.** Inferno#41 (IOMFB simulator-check race) removes a ~2–3% boot-time guest panic (`rt_bandwidth_setup`, data abort); no performance change. See [issue #100](https://github.com/dylanneve1/scion/issues/100).
 
 **Setup.** Android emulator `sdk_gphone64_arm64` on the Mac mini (8 vCPUs, 4 GB; host load
 about 3–5 from other work). The QEMU binaries are the CI `qemu-android-arm64` artifacts,

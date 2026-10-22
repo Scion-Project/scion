@@ -2,7 +2,7 @@
 
 ## Aim
 
-**iOS on Pixel** is a research and debugging project. Its questions are
+**Scion** is a research and debugging project. Its questions are
 technical:
 
 * Can an existing open-source Apple-device emulator (ChefKiss Inferno, a QEMU
