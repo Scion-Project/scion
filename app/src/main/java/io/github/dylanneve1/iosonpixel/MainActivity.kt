@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.graphics.Color
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -93,17 +94,25 @@ class MainActivity : Activity() {
     private var devVmDir: File? = null
     private var devAvfDisplay: Boolean? = null
     private val devSession get() = devBackend != null || devVmDir != null || devAvfDisplay != null
+    /**
+     * [VmState.runs] when the developer session pressed Start, or -1: once that run has begun and
+     * stopped, the session ends ([endDevSession]).
+     */
+    private var devRunsAtStart = -1
+    private lateinit var devBanner: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ui = Ui(this)
         DebugBundle.install(this)
         val debuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
-        if (debuggable) {
+        // A developer session that ended stays ended when the activity is recreated from the same intent.
+        if (debuggable && savedInstanceState?.getBoolean(KEY_DEV_ENDED) != true) {
             devBackend = intent.getStringExtra(VmService.EXTRA_BACKEND)?.let { Backend.fromId(it) }
             devVmDir = intent.getStringExtra(VmService.EXTRA_VM_DIR)?.let { File(it) }
             if (intent.hasExtra(VmService.EXTRA_AVF_DISPLAY)) devAvfDisplay = intent.getBooleanExtra(VmService.EXTRA_AVF_DISPLAY, false)
         }
+        devRunsAtStart = savedInstanceState?.getInt(KEY_DEV_RUNS, -1) ?: -1
         // The first call migrates the single-VM app into install 1 (see InstallMigration).
         loadInstall()
         window.decorView.setBackgroundColor(Ui.BG)
@@ -121,6 +130,14 @@ class MainActivity : Activity() {
         // Header
         root.addView(ui.text(30f, Ui.TEXT).apply { text = getString(R.string.app_name) }, ui.lp(top = 16))
         subtitle = ui.text(14f, Ui.MUTED).also { root.addView(it, ui.lp(top = 2)) }
+        devBanner = ui.text(14f, Color.BLACK, bold = true).apply {
+            background = ui.roundRect(Ui.WARN, 12)
+            setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10))
+            setOnClickListener {
+                if (VmState.status == VmState.Status.STOPPED) endDevSession()
+                else Toast.makeText(this@MainActivity, "Stop the VM first; the session ends when it stops", Toast.LENGTH_SHORT).show()
+            }
+        }.also { root.addView(it, ui.lp(top = 8)) }
 
         buildInstallsCard(root)
         buildStatusCard(root)
@@ -167,6 +184,32 @@ class MainActivity : Activity() {
         if (debuggable && savedInstanceState == null && intent.getBooleanExtra(EXTRA_START, false)) {
             if (VmState.status == VmState.Status.STOPPED) startVm()
         }
+    }
+
+    /**
+     * Leaves the developer session (an adb `--es backend/vm_dir` or `--ez avf_display` launch):
+     * back to the selected install, its saved settings and the install list. Called when the
+     * session's VM stops, or when the banner is tapped while nothing runs.
+     */
+    private fun endDevSession() {
+        if (!devSession) return
+        devBackend = null
+        devVmDir = null
+        devAvfDisplay = null
+        devRunsAtStart = -1
+        devEnded = true
+        loadInstall()
+        fillForm(install.settings)
+        VmState.addLine("note: developer session ended; back to ${install.name}")
+        render()
+    }
+
+    private var devEnded = false
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(KEY_DEV_ENDED, devEnded)
+        outState.putInt(KEY_DEV_RUNS, devRunsAtStart)
     }
 
     /** (Re)reads the selected install and makes its backend. */
@@ -579,6 +622,14 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
+        // A developer session lasts as long as its VM: once that has stopped, the user gets the app back.
+        if (devSession && devRunsAtStart >= 0 && VmState.runs > devRunsAtStart && VmState.status == VmState.Status.STOPPED) {
+            endDevSession()
+            return
+        }
+        devBanner.visibility = if (devSession) View.VISIBLE else View.GONE
+        devBanner.text = if (VmState.status == VmState.Status.STOPPED) "Developer session (not saved). Tap to exit"
+        else "Developer session (not saved). It ends when its VM stops"
         // A move (ImportService) switches the folder in use; pick that up.
         if (!devSession) Installs.get(this, install.id)?.takeIf { it.internal != install.internal }?.let {
             install = install.copy(internal = it.internal)
@@ -693,6 +744,7 @@ class MainActivity : Activity() {
     private fun startVm() {
         saveSettings()
         VmService.start(this, if (devSession) Installs.current(this) else install, devBackend, devVmDir, devAvfDisplay)
+        if (devSession) devRunsAtStart = VmState.runs
         if (backend.hasDisplay) openDisplay()
     }
 
@@ -725,5 +777,7 @@ class MainActivity : Activity() {
     private companion object {
         const val REQ_IMPORT = 1
         const val EXTRA_START = "start"
+        const val KEY_DEV_ENDED = "dev_session_ended"
+        const val KEY_DEV_RUNS = "dev_session_runs"
     }
 }

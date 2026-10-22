@@ -50,7 +50,12 @@ object VmState {
         notifyListeners()
     }
 
+    /** VMs started in this process (counted at STARTING), so a screen can tell when "its" run is over. */
+    @Volatile var runs = 0
+        private set
+
     internal fun set(status: Status, exit: Int? = lastExit) {
+        if (status == Status.STARTING) runs++
         this.status = status
         lastExit = exit
         notifyListeners()
