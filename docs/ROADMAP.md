@@ -42,6 +42,10 @@ That's simple and works, but it copies every frame several times.
       `mt-spi` (it already models path stages per finger).
 
 ## 3. Guest GPU (Imagination PowerVR)
+See [GPU.md](GPU.md) for the design: options (AGX emulation, paravirtual GL through
+virtio-gpu + gfxstream, cheaper wins), the recommendation, and the first milestone
+measured on the phone (an AVF guest drawing with the PowerVR through gfxstream).
+
 Inferno has no Apple GPU emulation. iOS runs with software rendering enabled
 by filesystem patches, so all of SpringBoard's compositing happens on the
 emulated CPU. Moving that work onto the Pixel's PowerVR GPU is the biggest
