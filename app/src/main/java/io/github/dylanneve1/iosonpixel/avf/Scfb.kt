@@ -102,6 +102,8 @@ object Scfb {
     private const val ABS_MT_POSITION_X = 0x35
     private const val ABS_MT_POSITION_Y = 0x36
     private const val ABS_MT_TRACKING_ID = 0x39
+    private const val EV_MSC = 4
+    private const val MSC_TIMESTAMP = 5
 
     /** What a touch report says, independent of MotionEvent (so it can be tested on the JVM). */
     enum class Action { DOWN, POINTER_DOWN, MOVE, POINTER_UP, UP, CANCEL }
@@ -114,8 +116,11 @@ object Scfb {
      * its socket takes (u16 type, u16 code, s32 value, little-endian), ending in SYN_REPORT.
      * The same stream the framework writes (VirtualMachine.sendMultiTouchEventInternal).
      * [changed] is the finger that went down or up; MOVE reports every finger in [pointers].
+     * [timeUs], when given, goes along as MSC_TIMESTAMP (microseconds, wrapping at 32 bits): the
+     * guest's driver (hackios-xnu-kernel 1201) stamps samples with it, so reports it reads in a
+     * burst keep their real spacing and UIKit's velocity isn't faked into a fling.
      */
-    fun touchReport(action: Action, pointers: List<Pointer>, changed: Int): ByteArray {
+    fun touchReport(action: Action, pointers: List<Pointer>, changed: Int, timeUs: Long? = null): ByteArray {
         val ev = ArrayList<Triple<Int, Int, Int>>()
         fun e(type: Int, code: Int, value: Int) = ev.add(Triple(type, code, value))
         fun at(p: Pointer, tracking: Int) {
@@ -142,6 +147,7 @@ object Scfb {
         }
         // Single-touch axes follow the first finger, for drivers that only read those.
         pointers.firstOrNull()?.let { e(EV_ABS, ABS_X, it.x); e(EV_ABS, ABS_Y, it.y) }
+        timeUs?.let { e(EV_MSC, MSC_TIMESTAMP, it.toInt()) }
         e(EV_SYN, 0, 0)
         val b = ByteBuffer.allocate(8 * ev.size).order(ByteOrder.LITTLE_ENDIAN)
         for ((t, c, v) in ev) b.putShort(t.toShort()).putShort(c.toShort()).putInt(v)
