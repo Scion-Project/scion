@@ -36,13 +36,17 @@ class AvfBackend(
     private val paths = AppPaths(app, install.id)
     private val dir get() = install.dir
     private val display get() = install.settings.avfDisplay
+    private val network get() = install.settings.avfNetwork
 
     override val kind = Backend.AVF
 
     override val hasDisplay get() = io.hasDisplay
 
     override fun checks(): List<VmBackend.Check> =
-        AvfSupport.checks(app, display) + AvfLayout(dir).checks() + listOfNotNull(if (display) AvfSupport.displayCheck(app) else null)
+        AvfSupport.checks(app, display) + AvfLayout(dir).checks() + listOfNotNull(
+            if (display) AvfSupport.displayCheck(app) else null,
+            if (network) AvfSupport.networkCheck(app) else null,
+        )
 
     override fun problems(): List<String> = checks().filter { !it.ok && it.blocking }.map { it.text }
 
@@ -91,6 +95,7 @@ class AvfBackend(
         append(" mem=").append(s.memoryBytes / (1024 * 1024)).append("M")
         append(" cpus=").append(if (s.matchHostCpus) "host" else "1")
         s.gpu?.let { append(" gpu=").append(it.backend).append(":").append(it.contextTypes.joinToString(",")) }
+        if (s.network) append(" net=tap")
         append(" params=\"").append(s.params.joinToString(" ")).append('"')
     }
 
@@ -159,6 +164,25 @@ object AvfSupport {
     fun exemptionCommand(display: Boolean = false): String =
         "adb shell settings put global hidden_api_blacklist_exemptions \"'" +
             (AvfApi.EXEMPTIONS + if (display) ScfbIo.EXEMPTIONS else emptyList()).joinToString(",").replace("$", "\\$") + "'\""
+
+    /**
+     * The Network setting's readiness: the builder call, and virtualizationservice's network
+     * feature (vmnic and VM tethering). Blocking: a VM asked to have a network that the service
+     * can't give one fails to start.
+     */
+    fun networkCheck(ctx: Context): VmBackend.Check {
+        val api = AvfApi.instance
+        if (!api.present || !api.networkSupported) {
+            return VmBackend.Check(false, "Network: this Android's AVF has no network option for custom VMs (useNetwork); turn Network off")
+        }
+        val manager = runCatching { api.manager(ctx) }.getOrNull()
+        return when (manager?.let { api.networkFeature(it) }) {
+            true -> VmBackend.Check(true, "Network: AVF gives the VM a virtio-net card on the phone's connection")
+            false -> VmBackend.Check(false, "Network: this device's virtualization service is built without networking " +
+                "(${AvfApi.FEATURE_NETWORK}); turn Network off")
+            null -> VmBackend.Check(true, "Network: AVF's network feature couldn't be queried; trying anyway", blocking = false)
+        }
+    }
 
     /**
      * The experimental display's readiness. Never blocking: without it the VM boots console-only.
@@ -268,6 +292,7 @@ class AvfLayout(val dir: File) {
         memoryBytes = (memoryMib ?: (s.ramGb * 1024L)) * 1024 * 1024,
         matchHostCpus = cpus?.let { it == "host" } ?: (s.smp > 1),
         gpu = gpu,
+        network = s.avfNetwork,
     )
 
     companion object {

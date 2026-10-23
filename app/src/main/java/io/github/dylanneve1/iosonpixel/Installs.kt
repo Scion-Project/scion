@@ -144,12 +144,16 @@ object Installs {
      * A one-off install for the debug-build developer hook: [base]'s settings, with [backend],
      * the folder [dir] and/or the Experimental AVF display setting [avfDisplay] instead of its own. Never saved; its sockets and logs use id "dev".
      */
-    fun developer(base: Install, backend: Backend?, dir: File?, avfDisplay: Boolean? = null): Install = base.copy(
+    fun developer(base: Install, backend: Backend?, dir: File?, avfDisplay: Boolean? = null, avfNetwork: Boolean? = null): Install = base.copy(
         id = DEVELOPER_ID,
         name = "Developer session",
         internalDir = dir?.absolutePath ?: base.internalDir,
         sharedDir = dir?.absolutePath ?: base.sharedDir,
-        settings = base.settings.copy(backend = backend ?: base.backend, avfDisplay = avfDisplay ?: base.settings.avfDisplay),
+        settings = base.settings.copy(
+            backend = backend ?: base.backend,
+            avfDisplay = avfDisplay ?: base.settings.avfDisplay,
+            avfNetwork = avfNetwork ?: base.settings.avfNetwork,
+        ),
         legacy = false,
     )
 
@@ -221,10 +225,11 @@ object InstallMigration {
 
     /** A fingerprint of the old preferences: settings and location. */
     fun seen(settings: VmSettings, vmInternal: Boolean): String =
-        encode(settings).apply { remove(KEY_AVF_DISPLAY) }.put("vm_internal", vmInternal).toString()
+        encode(settings).apply { remove(KEY_AVF_DISPLAY); remove(KEY_AVF_NETWORK) }.put("vm_internal", vmInternal).toString()
 
     /** Per-install only (not in the old preferences), so it's left out of [seen] and kept by [resync]. */
     private const val KEY_AVF_DISPLAY = "avf_display"
+    private const val KEY_AVF_NETWORK = "avf_network"
 
     /**
      * After a downgrade and re-upgrade: if the old preferences no longer match [seen] (what this
@@ -236,7 +241,7 @@ object InstallMigration {
         if (seen == null || seen == now) return null
         if (list.none { it.legacy }) return null
         return list.map {
-            if (it.legacy) it.copy(settings = legacy.settings.copy(avfDisplay = it.settings.avfDisplay), internal = legacy.vmInternal)
+            if (it.legacy) it.copy(settings = legacy.settings.copy(avfDisplay = it.settings.avfDisplay, avfNetwork = it.settings.avfNetwork), internal = legacy.vmInternal)
             else it
         }
     }
@@ -285,6 +290,7 @@ object InstallMigration {
         put("security", s.security.id)
         put("extra_args", s.extraArgs)
         put(KEY_AVF_DISPLAY, s.avfDisplay)
+        put(KEY_AVF_NETWORK, s.avfNetwork)
     }
 
     private fun decodeSettings(o: JSONObject): VmSettings {
@@ -300,6 +306,7 @@ object InstallMigration {
             security = Security.fromId(o.optString("security")) ?: d.security,
             extraArgs = o.optString("extra_args", d.extraArgs),
             avfDisplay = o.optBoolean(KEY_AVF_DISPLAY, d.avfDisplay),
+            avfNetwork = o.optBoolean(KEY_AVF_NETWORK, d.avfNetwork),
         )
     }
 }
