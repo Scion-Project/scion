@@ -103,6 +103,12 @@ data class VmSettings(
      * only; the single-VM app's preferences never had it, so [save] and [load] leave it out.
      */
     val avfDisplay: Boolean = false,
+    /**
+     * AVF only: give the guest a network device (virtio-net) on the phone's connection, through
+     * the TAP and tethering AVF sets up for VMs ([io.github.dylanneve1.iosonpixel.avf.AvfApi.Spec.network]).
+     * Off by default; per install only, like [avfDisplay].
+     */
+    val avfNetwork: Boolean = false,
 ) {
     /** [extraArgs] as tokens. */
     val extraArgList: List<String> get() = extraArgs.split(Regex("\\s+")).filter { it.isNotEmpty() }
