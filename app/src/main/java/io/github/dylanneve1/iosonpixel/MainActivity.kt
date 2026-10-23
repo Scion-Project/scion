@@ -65,6 +65,7 @@ class MainActivity : Activity() {
     private lateinit var inProcess: Switch
     private lateinit var avfDisplay: Switch
     private lateinit var avfNetwork: Switch
+    private lateinit var avfCamera: Switch
     private lateinit var backendGroup: RadioGroup
     private lateinit var securityGroup: RadioGroup
     private lateinit var avfInfo: TextView
@@ -524,6 +525,18 @@ class MainActivity : Activity() {
             backend = VmBackend.create(this, install)
             render()
         }
+        avfCamera = switch(
+            advanced, "Camera",
+            "AVF only, with the experimental display: the phone's camera in the guest (iOS's Camera app). Android asks " +
+                "for the camera permission when you turn this on. The camera is used only while the guest asks for it " +
+                "and Scion is on screen.", s.avfCamera,
+        )
+        avfCamera.setOnCheckedChangeListener { _, checked ->
+            if (filling) return@setOnCheckedChangeListener
+            if (checked && !cameraGranted()) requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
+            saveSettings()
+            backend = VmBackend.create(this, install)
+        }
 
         advanced.addView(ui.text(14f, Ui.TEXT, bold = true).apply { text = "Guest security" }, ui.lp(top = 20))
         securityGroup = RadioGroup(this).also { advanced.addView(it, ui.lp(top = 4)) }
@@ -554,6 +567,7 @@ class MainActivity : Activity() {
         inProcess.isChecked = s.inProcess
         avfDisplay.isChecked = s.avfDisplay
         avfNetwork.isChecked = s.avfNetwork
+        avfCamera.isChecked = s.avfCamera
         extraArgs.setText(s.extraArgs)
         backendGroup.check(s.backend.ordinal + 1)
         securityGroup.check(s.security.ordinal + 1)
@@ -564,7 +578,7 @@ class MainActivity : Activity() {
         setAdvancedShown(
             s.vcpuAffinity != d.vcpuAffinity || s.splitWx != d.splitWx || s.inProcess != d.inProcess ||
                 s.backend != d.backend || s.security != d.security || s.extraArgs != d.extraArgs ||
-                s.avfDisplay != d.avfDisplay || s.avfNetwork != d.avfNetwork || devSession,
+                s.avfDisplay != d.avfDisplay || s.avfNetwork != d.avfNetwork || s.avfCamera != d.avfCamera || devSession,
         )
     }
 
@@ -821,6 +835,10 @@ class MainActivity : Activity() {
 
     private fun startVm() {
         saveSettings()
+        // (the VM boots either way: until the permission is there the guest's camera frames are black)
+        if (install.settings.avfCamera && install.settings.avfDisplay && !cameraGranted()) {
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
+        }
         VmService.start(this, if (devSession) Installs.current(this) else install, devBackend, devVmDir, devAvfDisplay, devAvfNetwork)
         if (devSession) devRunsAtStart = VmState.runs
         if (backend.hasDisplay) openDisplay()
@@ -841,7 +859,18 @@ class MainActivity : Activity() {
             extraArgs = extraArgs.text.toString().trim(),
             avfDisplay = avfDisplay.isChecked,
             avfNetwork = avfNetwork.isChecked,
+            avfCamera = avfCamera.isChecked,
         )
+    }
+
+    private fun cameraGranted() = checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_CAMERA || cameraGranted()) return
+        // Refused (or Android no longer asks): the setting goes back off; Android's app settings can still allow it.
+        Toast.makeText(this, "No camera permission: the guest won't get the camera. Allow it in Android's app settings.", Toast.LENGTH_LONG).show()
+        if (avfCamera.isChecked) avfCamera.isChecked = false
     }
 
     private fun openDisplay() = startActivity(Intent(this, DisplayActivity::class.java))
@@ -855,6 +884,7 @@ class MainActivity : Activity() {
 
     private companion object {
         const val REQ_IMPORT = 1
+        const val REQ_CAMERA = 2
         const val EXTRA_START = "start"
         const val KEY_DEV_ENDED = "dev_session_ended"
         const val KEY_DEV_RUNS = "dev_session_runs"

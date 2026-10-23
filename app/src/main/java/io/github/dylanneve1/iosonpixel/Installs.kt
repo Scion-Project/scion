@@ -225,11 +225,12 @@ object InstallMigration {
 
     /** A fingerprint of the old preferences: settings and location. */
     fun seen(settings: VmSettings, vmInternal: Boolean): String =
-        encode(settings).apply { remove(KEY_AVF_DISPLAY); remove(KEY_AVF_NETWORK) }.put("vm_internal", vmInternal).toString()
+        encode(settings).apply { remove(KEY_AVF_DISPLAY); remove(KEY_AVF_NETWORK); remove(KEY_AVF_CAMERA) }.put("vm_internal", vmInternal).toString()
 
     /** Per-install only (not in the old preferences), so it's left out of [seen] and kept by [resync]. */
     private const val KEY_AVF_DISPLAY = "avf_display"
     private const val KEY_AVF_NETWORK = "avf_network"
+    private const val KEY_AVF_CAMERA = "avf_camera"
 
     /**
      * After a downgrade and re-upgrade: if the old preferences no longer match [seen] (what this
@@ -241,7 +242,12 @@ object InstallMigration {
         if (seen == null || seen == now) return null
         if (list.none { it.legacy }) return null
         return list.map {
-            if (it.legacy) it.copy(settings = legacy.settings.copy(avfDisplay = it.settings.avfDisplay, avfNetwork = it.settings.avfNetwork), internal = legacy.vmInternal)
+            if (it.legacy) it.copy(
+                settings = legacy.settings.copy(
+                    avfDisplay = it.settings.avfDisplay, avfNetwork = it.settings.avfNetwork, avfCamera = it.settings.avfCamera,
+                ),
+                internal = legacy.vmInternal,
+            )
             else it
         }
     }
@@ -291,6 +297,7 @@ object InstallMigration {
         put("extra_args", s.extraArgs)
         put(KEY_AVF_DISPLAY, s.avfDisplay)
         put(KEY_AVF_NETWORK, s.avfNetwork)
+        put(KEY_AVF_CAMERA, s.avfCamera)
     }
 
     private fun decodeSettings(o: JSONObject): VmSettings {
@@ -307,6 +314,7 @@ object InstallMigration {
             extraArgs = o.optString("extra_args", d.extraArgs),
             avfDisplay = o.optBoolean(KEY_AVF_DISPLAY, d.avfDisplay),
             avfNetwork = o.optBoolean(KEY_AVF_NETWORK, d.avfNetwork),
+            avfCamera = o.optBoolean(KEY_AVF_CAMERA, d.avfCamera),
         )
     }
 }
