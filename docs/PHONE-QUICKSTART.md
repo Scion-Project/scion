@@ -315,6 +315,20 @@ adb shell settings put global hidden_api_blacklist_exemptions \
 adb shell am force-stop $PKG
 ```
 
+**Network** (Settings → Advanced, per install, off by default) asks AVF for a
+virtio-net card on Android's VM tethering (`useNetwork`; see
+[NETWORKING.md](NETWORKING.md)). It needs nothing more than the first
+exemption, but for the main screen to show whether AVF has networking at all
+(`VirtualMachineManager.isFeatureEnabled`, blocked for sideloaded apps) add one
+more prefix. Without it the check says so, and the VM asks for the card anyway
+and logs Android's answer. Everything at once (display and network):
+
+```sh
+adb shell settings put global hidden_api_blacklist_exemptions \
+  "'Landroid/system/virtualmachine/VirtualMachineCustomImageConfig,Landroid/system/virtualmachine/VirtualMachineConfig\$Builder;->setCustomImageConfig(,Landroid/system/virtualmachine/VirtualizationService;,Landroid/system/virtualizationservice/,Landroid/system/virtualmachine/VirtualMachineManager;->isFeatureEnabled('"
+adb shell am force-stop $PKG
+```
+
 If a member is missing, or Android refuses the devices (virtmgr rejects the
 config, or the VM dies at once with them), the app says "AVF display
 unavailable on this Android build: <reason>" and boots console-only.
