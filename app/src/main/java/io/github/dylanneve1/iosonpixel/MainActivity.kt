@@ -729,7 +729,7 @@ class MainActivity : Activity() {
         }
         subtitle.text = install.name + " · " + backendLabel(install.backend) + if (devSession) " · developer session" else ""
         avfInfo.text = "AVF needs a one-time adb setup; with AVF selected, the checks above show what's missing.\n" +
-            AvfSupport.checks(this, install.settings.avfDisplay).joinToString("\n") { (if (it.ok) "✓ " else "✗ ") + it.text.lineSequence().first() }
+            AvfSupport.checks(this, install.settings.avfDisplay, install.settings.avfNetwork).joinToString("\n") { (if (it.ok) "✓ " else "✗ ") + it.text.lineSequence().first() }
 
         val st = VmState.status
         // The exit code and notice belong to the install that ran.
