@@ -13,9 +13,15 @@
     <!-- The AVF "Network" setting (useNetwork: a TAP that virtualizationservice tethers to the
          phone's connection). The Terminal app, which uses the same option, holds it too. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The AVF camera (per-install Camera setting, avf/SccamCamera.kt): asked for at run time with
+         Android's own prompt when the setting is turned on; used only while Scion is on screen. -->
+    <uses-permission android:name="android.permission.CAMERA" />
 
     <uses-feature
         android:name="android.software.virtualization_framework"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera.any"
         android:required="false" />
 
     <application
