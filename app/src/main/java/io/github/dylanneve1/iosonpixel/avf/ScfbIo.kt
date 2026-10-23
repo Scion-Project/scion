@@ -28,6 +28,9 @@ import java.nio.ByteOrder
  *    display's Surface ([ScfbNative]).
  *  - Touch: a virtio-input multi-touch device, added to the same raw config, whose socket the app
  *    writes evdev reports into.
+ *  - Camera, with the per-install Camera setting ([camera]): a second shared region ([Sccam]) right
+ *    below the framebuffer's, added the same way, that [SccamCamera] writes the phone's camera
+ *    frames into. If it can't be set up, the display goes on without it.
  *
  * The Java API never fills those two raw-config fields, so for the one `createVm` call of this
  * run the app wraps the `IVirtualizationService` binder the framework uses (in this process, on
@@ -39,7 +42,14 @@ class ScfbIo(
     private val width: Int,
     private val height: Int,
     private val notice: (String) -> Unit,
+    private val camera: CameraSpec? = null,
 ) : AvfIo {
+    /**
+     * The camera, when the install's Camera setting is on: which cameras the phone has (bit 0 back,
+     * bit 1 front) and what starts serving the region once the VM runs ([SccamCamera]).
+     */
+    class CameraSpec(val cameras: Int, val start: (ByteBuffer, (String) -> Unit) -> AutoCloseable)
+
     override val hasDisplay: Boolean get() = unavailable() == null
 
     @Volatile override var configured = false
@@ -54,6 +64,11 @@ class ScfbIo(
     private var touchTheirs: ParcelFileDescriptor? = null
     private var hook: Hook? = null
     private var screen: ScfbScreen? = null
+    private var cam: Sccam.Region? = null
+    private var camShm: SharedMemory? = null
+    private var camFd: ParcelFileDescriptor? = null
+    private var camMap: ByteBuffer? = null
+    private var camRunner: AutoCloseable? = null
 
     private fun fail(reason: String) {
         val text = UNAVAILABLE + reason
@@ -68,19 +83,20 @@ class ScfbIo(
         val r = Scfb.region(memoryBytes, width, height).getOrElse { fail(it.message.orEmpty()); return }
         try {
             createRegion(r)
+            cam = camera?.let { setupCamera(r, it) }
             val pair = ParcelFileDescriptor.createSocketPair()
             touchOurs = pair[0]
             touchTheirs = pair[1]
             // Blocking: reports go out whole from a writer thread (ScfbScreen), never from the UI
             // thread. A non-blocking write cut short split an evdev event and scrambled the stream.
-            hook = Hook(hooks!!, r).also { it.install() }
+            hook = Hook(hooks!!, r, cam).also { it.install() }
         } catch (e: Exception) {
             release()
             fail(describe(e))
             return
         }
         // Last, so the guest only hears of the region once everything else is in place.
-        if (!r.params.all { image.call("addParam", it) }) {
+        if (!(r.params + cam?.params.orEmpty()).all { image.call("addParam", it) }) {
             release()
             fail("VirtualMachineCustomImageConfig.Builder.addParam refused the scfb.* arguments")
             return
@@ -89,27 +105,61 @@ class ScfbIo(
         configured = true
         log("avf: display: ${r.width}x${r.height} shared framebuffer, ${r.size shr 20} MiB at guest 0x${r.addr.toString(16)}; " +
             "virtio-input multi-touch")
+        cam?.let { log("avf: camera: ${it.size shr 20} MiB region at guest 0x${it.addr.toString(16)}, pictures ${it.width}x${it.height}") }
+    }
+
+    /** The camera's region below the framebuffer's, made and primed; null (and why, logged) if it can't be. */
+    private fun setupCamera(r: Scfb.Region, spec: CameraSpec): Sccam.Region? {
+        val c = Sccam.region(r).getOrElse {
+            log("avf: camera off for this run: ${it.message}")
+            return null
+        }
+        return try {
+            val (sm, fd, b) = ashmem("sccam", c.size)
+            camShm = sm
+            camFd = fd
+            camMap = b
+            Sccam.prime(b, spec.cameras, System.nanoTime())
+            c
+        } catch (e: Exception) {
+            log("avf: camera off for this run: ${describe(e)}")
+            releaseCamera()
+            null
+        }
     }
 
     /** The ashmem region, mapped here and primed ([Scfb.prime]); its fd goes to crosvm. */
     private fun createRegion(r: Scfb.Region) {
-        val sm = SharedMemory.create("scfb", r.size.toInt()).also { shm = it }
-        // SharedMemory has no public fd getter; its parcel form is the fd (a dup, ours to close).
-        val p = Parcel.obtain()
-        val pfd = try {
-            sm.writeToParcel(p, 0)
-            p.setDataPosition(0)
-            p.readFileDescriptor()
-        } finally {
-            p.recycle()
-        }
+        val (sm, pfd, b) = ashmem("scfb", r.size)
+        shm = sm
         shmFd = pfd
-        val kind = runCatching { Os.readlink("/proc/self/fd/${pfd.fd}") }.getOrDefault("?")
-        // crosvm may map ashmem (every domain may), not an app's memfd (DISPLAY-INPUT.md, section 4).
-        if (!kind.startsWith("/dev/ashmem")) throw IllegalStateException("shared memory is $kind, not ashmem, so crosvm can't map it")
-        val b = sm.mapReadWrite()
         map = b
         Scfb.prime(b, System.nanoTime())
+    }
+
+    /** An ashmem region of [size] bytes: it, its fd (for crosvm) and its mapping here. Closes what it made if it fails. */
+    private fun ashmem(name: String, size: Long): Triple<SharedMemory, ParcelFileDescriptor, ByteBuffer> {
+        val sm = SharedMemory.create(name, size.toInt())
+        var pfd: ParcelFileDescriptor? = null
+        try {
+            // SharedMemory has no public fd getter; its parcel form is the fd (a dup, ours to close).
+            val p = Parcel.obtain()
+            pfd = try {
+                sm.writeToParcel(p, 0)
+                p.setDataPosition(0)
+                p.readFileDescriptor()
+            } finally {
+                p.recycle()
+            }
+            val kind = runCatching { Os.readlink("/proc/self/fd/${pfd!!.fd}") }.getOrDefault("?")
+            // crosvm may map ashmem (every domain may), not an app's memfd (DISPLAY-INPUT.md, section 4).
+            if (!kind.startsWith("/dev/ashmem")) throw IllegalStateException("shared memory is $kind, not ashmem, so crosvm can't map it")
+            return Triple(sm, pfd!!, sm.mapReadWrite())
+        } catch (e: Exception) {
+            runCatching { pfd?.close() }
+            runCatching { sm.close() }
+            throw e
+        }
     }
 
     override fun attach(vm: AvfApi.Vm, log: (String) -> Unit): AvfIo.Screen? {
@@ -117,6 +167,16 @@ class ScfbIo(
         hook = null
         // False also when the createVm hook had to drop the devices (virtmgr refused them).
         if (!configured) return null
+        val c = camMap
+        val spec = camera
+        if (cam != null && c != null && spec != null) {
+            camRunner = try {
+                spec.start.invoke(c, log)
+            } catch (e: Exception) {
+                log("avf: camera: couldn't start: ${describe(e)}")
+                null
+            }
+        }
         return ScfbScreen().also { screen = it }
     }
 
@@ -133,7 +193,20 @@ class ScfbIo(
         release()
     }
 
+    private fun releaseCamera() {
+        runCatching { camRunner?.close() }
+        camRunner = null
+        camMap?.let { runCatching { SharedMemory.unmap(it) } }
+        camMap = null
+        runCatching { camFd?.close() }
+        camFd = null
+        runCatching { camShm?.close() }
+        camShm = null
+        cam = null
+    }
+
     private fun release() {
+        releaseCamera()
         hook?.remove()
         hook = null
         map?.let { runCatching { SharedMemory.unmap(it) } }
@@ -154,7 +227,7 @@ class ScfbIo(
      * adding the region and the touch device to that call's raw config. [remove] puts the
      * original binder back.
      */
-    private inner class Hook(private val h: Members, private val r: Scfb.Region) {
+    private inner class Hook(private val h: Members, private val r: Scfb.Region, private val c: Sccam.Region?) {
         private var service: Any? = null // strong: the framework only keeps a weak reference
         private var original: Any? = null
         @Volatile private var armed = true
@@ -199,14 +272,27 @@ class ScfbIo(
                 forward(target, m, args)
             } catch (e: Exception) {
                 undo()
+                // The camera's region too much? The display without it, before nothing at all. (The guest then
+                // finds no camera header where sccam.addr says: plain RAM, all zero, and boots without a camera.)
+                if (c != null) {
+                    log("avf: camera: virtmgr refused the camera's region (${describe(e)}); trying without it")
+                    val undo2 = runCatching { patch(args[0]!!, withCamera = false) }.getOrNull()
+                    if (undo2 != null) {
+                        try {
+                            return forward(target, m, args).also { releaseCamera() }
+                        } catch (e2: Exception) {
+                            undo2()
+                        }
+                    }
+                }
                 configured = false
                 fail("virtmgr refused the display devices: ${describe(e)}")
                 forward(target, m, args)
             }
         }
 
-        /** Appends the backing file and the touch device; returns what puts the config back. */
-        private fun patch(config: Any): () -> Unit {
+        /** Appends the backing file(s) and the touch device; returns what puts the config back. */
+        private fun patch(config: Any, withCamera: Boolean = true): () -> Unit {
             val raw = h.getRawConfig.invoke(config)!!
             val file = h.cmbfNew.newInstance()
             h.cmbfFile.set(file, shmFd)
@@ -220,7 +306,15 @@ class ScfbIo(
             val dev = h.multiTouch.invoke(null, mt)
             val oldFiles = h.rawFiles.get(raw)
             val oldInputs = h.rawInputs.get(raw)
-            h.rawFiles.set(raw, append(h.rawFiles.type.componentType!!, oldFiles, file))
+            var files = append(h.rawFiles.type.componentType!!, oldFiles, file)
+            if (withCamera && c != null && camFd != null) {
+                val cf = h.cmbfNew.newInstance()
+                h.cmbfFile.set(cf, camFd)
+                h.cmbfRangeStart.setLong(cf, c.addr)
+                h.cmbfSize.setLong(cf, c.size)
+                files = append(h.rawFiles.type.componentType!!, files, cf)
+            }
+            h.rawFiles.set(raw, files)
             h.rawInputs.set(raw, append(h.rawInputs.type.componentType!!, oldInputs, dev))
             return {
                 runCatching { h.rawFiles.set(raw, oldFiles) }
