@@ -44,9 +44,9 @@ class AvfBackend(
     override val hasDisplay get() = io.hasDisplay
 
     override fun checks(): List<VmBackend.Check> =
-        AvfSupport.checks(app, display) + AvfLayout(dir).checks() + listOfNotNull(
-            if (display) AvfSupport.displayCheck(app) else null,
-            if (network) AvfSupport.networkCheck(app) else null,
+        AvfSupport.checks(app, display, network) + AvfLayout(dir).checks() + listOfNotNull(
+            if (display) AvfSupport.displayCheck(app, network) else null,
+            if (network) AvfSupport.networkCheck(app, display) else null,
         )
 
     override fun problems(): List<String> = checks().filter { !it.ok && it.blocking }.map { it.text }
@@ -125,7 +125,7 @@ class AvfBackend(
  */
 object AvfSupport {
     /** [display]: the "Experimental AVF display" setting is on, so the setup needs its exemption too. */
-    fun checks(ctx: Context, display: Boolean = false): List<VmBackend.Check> {
+    fun checks(ctx: Context, display: Boolean = false, network: Boolean = false): List<VmBackend.Check> {
         val pkg = ctx.packageName
         if (Build.VERSION.SDK_INT < 34) {
             return listOf(VmBackend.Check(false, "AVF needs Android 14 or later; this is Android ${Build.VERSION.RELEASE}"))
@@ -149,7 +149,7 @@ object AvfSupport {
         } else {
             VmBackend.Check(false, "Custom-VM API blocked by Android's hidden-API policy (" +
                 api.blocked.joinToString(limit = 3) { it.key } + "). Allow it over adb, then restart the app. " +
-                "This is a global setting:\n  ${exemptionCommand(display)}\n  adb shell am force-stop $pkg")
+                "This is a global setting:\n  ${exemptionCommand(display, network)}\n  adb shell am force-stop $pkg")
         }
         if (granted(AvfApi.PERM_MANAGE)) {
             val caps = runCatching { api.manager(ctx)?.let { api.capabilities(it) } }.getOrNull()
@@ -166,16 +166,17 @@ object AvfSupport {
      * Host-side command that sets the exemption ([AvfApi.EXEMPTIONS], plus [ScfbIo.EXEMPTIONS]
      * for the experimental display), quoted for a POSIX shell.
      */
-    fun exemptionCommand(display: Boolean = false): String =
+    fun exemptionCommand(display: Boolean = false, network: Boolean = false): String =
         "adb shell settings put global hidden_api_blacklist_exemptions \"'" +
-            (AvfApi.EXEMPTIONS + if (display) ScfbIo.EXEMPTIONS else emptyList()).joinToString(",").replace("$", "\\$") + "'\""
+            (AvfApi.EXEMPTIONS + (if (display) ScfbIo.EXEMPTIONS else emptyList()) +
+                (if (network) AvfApi.NETWORK_EXEMPTIONS else emptyList())).joinToString(",").replace("$", "\\$") + "'\""
 
     /**
      * The Network setting's readiness: the builder call, and virtualizationservice's network
      * feature (vmnic and VM tethering). Blocking: a VM asked to have a network that the service
      * can't give one fails to start.
      */
-    fun networkCheck(ctx: Context): VmBackend.Check {
+    fun networkCheck(ctx: Context, display: Boolean = false): VmBackend.Check {
         val api = AvfApi.instance
         if (!api.present || !api.networkSupported) {
             return VmBackend.Check(false, "Network: this Android's AVF has no network option for custom VMs (useNetwork); turn Network off")
@@ -185,20 +186,25 @@ object AvfSupport {
             true -> VmBackend.Check(true, "Network: AVF gives the VM a virtio-net card on the phone's connection")
             false -> VmBackend.Check(false, "Network: this device's virtualization service is built without networking " +
                 "(${AvfApi.FEATURE_NETWORK}); turn Network off")
-            null -> VmBackend.Check(true, "Network: AVF's network feature couldn't be queried; trying anyway", blocking = false)
+            // Not knowing is no reason to refuse: the VM asks for the card and the log has Android's answer.
+            null -> VmBackend.Check(false, "Network: the app can't ask whether AVF has networking (hidden-API policy), " +
+                "so the VM asks for a network card anyway and the log shows Android's answer. To have it asked here, " +
+                "widen the exemption (a global setting), then restart the app:\n  " +
+                exemptionCommand(display, network = true) + "\n  adb shell am force-stop ${ctx.packageName}",
+                blocking = false)
         }
     }
 
     /**
      * The experimental display's readiness. Never blocking: without it the VM boots console-only.
      */
-    fun displayCheck(ctx: Context): VmBackend.Check {
+    fun displayCheck(ctx: Context, network: Boolean = false): VmBackend.Check {
         val reason = ScfbIo.unavailable()
             ?: return VmBackend.Check(true, "Experimental AVF display: shared framebuffer and touch available")
         return VmBackend.Check(false,
             ScfbIo.UNAVAILABLE + reason + ". The VM will boot console-only. The display needs the extended " +
                 "hidden-API exemption (a global setting); set it over adb, then restart the app:\n  " +
-                exemptionCommand(display = true) + "\n  adb shell am force-stop ${ctx.packageName}",
+                exemptionCommand(display = true, network) + "\n  adb shell am force-stop ${ctx.packageName}",
             blocking = false)
     }
 }
@@ -373,7 +379,11 @@ class AvfVm private constructor(
                     stopped.countDown()
                 }
 
-                override fun onError(code: Int, message: String) = log("avf: error ${api.errorName(code)}: $message")
+                override fun onError(code: Int, message: String) {
+                    log("avf: error ${api.errorName(code)}: $message")
+                    if (spec.network) log("avf: network: the VM was asked to have a network card (Network is on): " +
+                        "if this error is about it, that is Android's answer; turn Network off to boot without one")
+                }
 
                 override fun onEvent(name: String) = log("avf: $name")
             })
@@ -384,13 +394,18 @@ class AvfVm private constructor(
             screen = io.attach(v, log)
             // onStopped may already have arrived (a guest that exits at once); keep STOPPED then.
             if (stopped.count > 0) state(State.RUNNING)
+            if (spec.network) log("avf: network: Android accepted useNetwork: the guest has a virtio-net card on its VM tethering")
             return true
         } catch (e: AvfException) {
             log("error: AVF: ${e.message}")
             // virtmgr checks the grants itself, so a missing one surfaces as a SecurityException here.
             if (e.cause is SecurityException) log("error: check the MANAGE_ and USE_CUSTOM_VIRTUAL_MACHINE grants (see the checks on the main screen)")
+            if (spec.network) log("error: Network is on: the VM asked for a network card (useNetwork); if the error above " +
+                "is about it, that is Android's answer. Turn Network off to boot without one")
         } catch (e: RuntimeException) {
             log("error: AVF: $e")
+            if (spec.network) log("error: Network is on: the VM asked for a network card (useNetwork); if the error above " +
+                "is about it, that is Android's answer. Turn Network off to boot without one")
         }
         state(State.STOPPED)
         stopped.countDown()

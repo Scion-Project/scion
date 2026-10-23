@@ -35,6 +35,15 @@ Wi-Fi network service and runs DHCP itself; Settings › Wi-Fi shows "Scion". Wi
 the card is a wired en0 that iOS doesn't configure by itself (HackiOS's `net_test dhcp en0`
 does it on QEMU).
 
+**Verified on QEMU (Mac, hvf, 2026-10-23):** `NET=1 avf/qemu-scfb.sh` (virtio-net-pci on
+`-netdev user`) with the new kernel. iOS shows the Wi-Fi icon in the status bar, and Settings ›
+Wi-Fi shows "Scion" ticked as an Unsecured Network. The DHCP lease is 10.0.2.15/24 with router
+10.0.2.2, and Safari loads google.com over HTTPS. One requirement: configd has to be among
+the launchd jobs. A root.apfs built without `REST=1` has no configd, so nothing runs DHCP.
+`common/build.sh` builds with `REST=1`; also check `mkjobs.py --rest` writes one plist per job
+(fixed in hackios-xnu-userland: before the fix, all the on-demand jobs were written to one file
+named `RWA_PACKED16`).
+
 **Turning it on** (needs a kernel with the virtual station: hackios-xnu-kernel main after the
 `avf/net-wifi` merge):
 

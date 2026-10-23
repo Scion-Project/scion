@@ -294,6 +294,15 @@ class AvfApi private constructor(
             "Landroid/system/virtualmachine/VirtualMachineConfig\$Builder;->setCustomImageConfig(",
         )
 
+        /**
+         * With the Network setting: VirtualMachineManager.isFeatureEnabled is @SystemApi and
+         * blocked for a sideloaded app, so asking whether AVF has networking needs this prefix too.
+         * Without it the app can't ask, but still requests the card ([Spec.network]).
+         */
+        val NETWORK_EXEMPTIONS = listOf(
+            "Landroid/system/virtualmachine/VirtualMachineManager;->isFeatureEnabled(",
+        )
+
         /** Resolved on first use, once per process. */
         val instance: AvfApi by lazy { resolve() }
 
@@ -318,7 +327,7 @@ class AvfApi private constructor(
             Def("Manager.get", listOf("String"), false),
             Def("Manager.delete", listOf("String"), false),
             Def("Manager.create", listOf("String", "Config"), false),
-            Def("Manager.isFeatureEnabled", listOf("String"), false, optional = true),
+            Def("Manager.isFeatureEnabled", listOf("String"), true, optional = true),
             Def("ConfigBuilder.<init>", listOf("Context"), false),
             Def("ConfigBuilder.setProtectedVm", listOf("boolean"), false),
             Def("ConfigBuilder.setMemoryBytes", listOf("long"), false),
