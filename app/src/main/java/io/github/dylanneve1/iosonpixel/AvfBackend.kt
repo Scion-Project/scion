@@ -7,6 +7,7 @@ import io.github.dylanneve1.iosonpixel.avf.AvfApi
 import io.github.dylanneve1.iosonpixel.avf.AvfException
 import io.github.dylanneve1.iosonpixel.avf.AvfIo
 import io.github.dylanneve1.iosonpixel.avf.Scfb
+import io.github.dylanneve1.iosonpixel.avf.SccamCamera
 import io.github.dylanneve1.iosonpixel.avf.ScfbIo
 import java.io.File
 import java.io.FileWriter
@@ -30,7 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AvfBackend(
     ctx: Context,
     private val install: Install,
-    private val io: AvfIo = defaultIo(install),
+    private val io: AvfIo = defaultIo(ctx.applicationContext, install),
 ) : VmBackend {
     private val app = ctx.applicationContext
     private val paths = AppPaths(app, install.id)
@@ -106,10 +107,14 @@ class AvfBackend(
         /** How long a VM with display devices must stay up before they count as accepted. */
         const val EARLY_STOP_MS = 1000L
 
-        fun defaultIo(install: Install): AvfIo =
+        fun defaultIo(app: Context, install: Install): AvfIo =
             if (install.settings.avfDisplay) {
                 val (w, h) = AvfLayout(install.dir).displaySize ?: (Scfb.DEFAULT_WIDTH to Scfb.DEFAULT_HEIGHT)
-                ScfbIo(w, h) { VmState.notice(it) }
+                // The camera rides on the display's shared-memory hook (avf/SccamCamera.kt).
+                val camera = if (install.settings.avfCamera) {
+                    ScfbIo.CameraSpec(SccamCamera.cameras(app)) { region, log -> SccamCamera(app, region, log).also { it.start() } }
+                } else null
+                ScfbIo(w, h, { VmState.notice(it) }, camera)
             } else AvfIo.None
     }
 }

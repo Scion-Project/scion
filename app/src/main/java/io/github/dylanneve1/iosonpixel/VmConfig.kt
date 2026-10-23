@@ -109,6 +109,13 @@ data class VmSettings(
      * Off by default; per install only, like [avfDisplay].
      */
     val avfNetwork: Boolean = false,
+    /**
+     * AVF only, with [avfDisplay]: the phone's camera for the guest (iOS's Camera app), through a
+     * second shared region ([io.github.dylanneve1.iosonpixel.avf.SccamCamera]). Needs the CAMERA
+     * permission, which the user grants with Android's prompt when turning this on. Per install only,
+     * as [avfDisplay].
+     */
+    val avfCamera: Boolean = false,
 ) {
     /** [extraArgs] as tokens. */
     val extraArgList: List<String> get() = extraArgs.split(Regex("\\s+")).filter { it.isNotEmpty() }
