@@ -44,6 +44,16 @@ class AvfApi private constructor(
     /** virtio-blk disks need the (optional) Disk members too. */
     val disksSupported: Boolean get() = unreachable.none { it.key in DISK_MEMBERS }
 
+    /** The custom-image builder can ask for a network device (`useNetwork`, Android 15+). */
+    val networkSupported: Boolean get() = unreachable.none { it.key == "ImageBuilder.useNetwork" }
+
+    /**
+     * Whether virtualizationservice was built with its network feature
+     * ([FEATURE_NETWORK]: a TAP from vmnic, tethered by the system). Null if it can't be asked.
+     */
+    fun networkFeature(manager: Any): Boolean? =
+        runCatching { call("Manager.isFeatureEnabled", manager, FEATURE_NETWORK) as Boolean }.getOrNull()
+
     // ---- VirtualMachineManager ------------------------------------------------
 
     /** The VirtualMachineManager system service, or null if the device has none. */
@@ -80,6 +90,11 @@ class AvfApi private constructor(
         val matchHostCpus: Boolean,
         /** A virtio-gpu with 3D (crosvm --gpu); null = none. */
         val gpu: Gpu? = null,
+        /**
+         * A virtio-net device on a TAP that virtualizationservice makes and Android's tethering
+         * serves (DHCP, DNS, NAT): the same network the Terminal app's VM gets.
+         */
+        val network: Boolean = false,
     )
 
     /**
@@ -132,6 +147,10 @@ class AvfApi private constructor(
         for (d in spec.disks) {
             val disk = call(if (d.writable) "Disk.RWDisk" else "Disk.RODisk", null, d.path)
             call("ImageBuilder.addDisk", img, disk)
+        }
+        if (spec.network) {
+            if (!networkSupported) throw AvfException("a network device needs VirtualMachineCustomImageConfig.Builder.useNetwork, which this Android doesn't have")
+            call("ImageBuilder.useNetwork", img, true)
         }
         configure(ImageBuilder(img))
         spec.gpu?.let { setGpu(img, it) }
@@ -261,6 +280,8 @@ class AvfApi private constructor(
         const val PERM_CUSTOM = "android.permission.USE_CUSTOM_VIRTUAL_MACHINE"
         const val CAPABILITY_PROTECTED_VM = 1
         const val CAPABILITY_NON_PROTECTED_VM = 2
+        /** VirtualMachineManager.FEATURE_NETWORK. */
+        const val FEATURE_NETWORK = "com.android.kvm.NETWORK"
 
         /**
          * Signature prefixes for `settings put global hidden_api_blacklist_exemptions`, which takes
@@ -297,6 +318,7 @@ class AvfApi private constructor(
             Def("Manager.get", listOf("String"), false),
             Def("Manager.delete", listOf("String"), false),
             Def("Manager.create", listOf("String", "Config"), false),
+            Def("Manager.isFeatureEnabled", listOf("String"), false, optional = true),
             Def("ConfigBuilder.<init>", listOf("Context"), false),
             Def("ConfigBuilder.setProtectedVm", listOf("boolean"), false),
             Def("ConfigBuilder.setMemoryBytes", listOf("long"), false),
@@ -312,6 +334,7 @@ class AvfApi private constructor(
             Def("ImageBuilder.addParam", listOf("String"), true),
             Def("ImageBuilder.build", listOf(), true),
             Def("ImageBuilder.addDisk", listOf("Disk"), true, optional = true),
+            Def("ImageBuilder.useNetwork", listOf("boolean"), true, optional = true),
             Def("Disk.RWDisk", listOf("String"), true, optional = true),
             Def("Disk.RODisk", listOf("String"), true, optional = true),
             Def("VM.setCallback", listOf("Executor", "Callback"), false),

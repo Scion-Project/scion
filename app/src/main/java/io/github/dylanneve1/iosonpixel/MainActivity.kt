@@ -64,6 +64,7 @@ class MainActivity : Activity() {
     private lateinit var splitWx: Switch
     private lateinit var inProcess: Switch
     private lateinit var avfDisplay: Switch
+    private lateinit var avfNetwork: Switch
     private lateinit var backendGroup: RadioGroup
     private lateinit var securityGroup: RadioGroup
     private lateinit var avfInfo: TextView
@@ -93,7 +94,8 @@ class MainActivity : Activity() {
     private var devBackend: Backend? = null
     private var devVmDir: File? = null
     private var devAvfDisplay: Boolean? = null
-    private val devSession get() = devBackend != null || devVmDir != null || devAvfDisplay != null
+    private var devAvfNetwork: Boolean? = null
+    private val devSession get() = devBackend != null || devVmDir != null || devAvfDisplay != null || devAvfNetwork != null
     /**
      * [VmState.runs] when the developer session pressed Start, or -1: once that run has begun and
      * stopped, the session ends ([endDevSession]).
@@ -111,6 +113,7 @@ class MainActivity : Activity() {
             devBackend = intent.getStringExtra(VmService.EXTRA_BACKEND)?.let { Backend.fromId(it) }
             devVmDir = intent.getStringExtra(VmService.EXTRA_VM_DIR)?.let { File(it) }
             if (intent.hasExtra(VmService.EXTRA_AVF_DISPLAY)) devAvfDisplay = intent.getBooleanExtra(VmService.EXTRA_AVF_DISPLAY, false)
+            if (intent.hasExtra(VmService.EXTRA_AVF_NETWORK)) devAvfNetwork = intent.getBooleanExtra(VmService.EXTRA_AVF_NETWORK, false)
         }
         devRunsAtStart = savedInstanceState?.getInt(KEY_DEV_RUNS, -1) ?: -1
         // The first call migrates the single-VM app into install 1 (see InstallMigration).
@@ -179,7 +182,8 @@ class MainActivity : Activity() {
             Thread({ StorageBench.run(applicationContext, mb) }, "storage-bench").start()
         }
         // Run a backend / VM folder for this session only, nothing saved; `start` presses Start:
-        //   adb shell am start -n <pkg>/.MainActivity --es backend avf --es vm_dir <dir> [--ez avf_display true] --ez start true
+        //   adb shell am start -n <pkg>/.MainActivity --es backend avf --es vm_dir <dir> [--ez avf_display true]
+        //     [--ez avf_network true] --ez start true
         if (devSession) VmState.addLine("note: developer session: ${backend.kind.label}, VM folder ${install.dir}" +
             "; settings are not saved")
         if (debuggable && savedInstanceState == null && intent.getBooleanExtra(EXTRA_START, false)) {
@@ -197,6 +201,7 @@ class MainActivity : Activity() {
         devBackend = null
         devVmDir = null
         devAvfDisplay = null
+        devAvfNetwork = null
         devRunsAtStart = -1
         devEnded = true
         loadInstall()
@@ -216,7 +221,7 @@ class MainActivity : Activity() {
     /** (Re)reads the selected install and makes its backend. */
     private fun loadInstall() {
         val selected = Installs.current(this)
-        install = if (devSession) Installs.developer(selected, devBackend, devVmDir, devAvfDisplay) else selected
+        install = if (devSession) Installs.developer(selected, devBackend, devVmDir, devAvfDisplay, devAvfNetwork) else selected
         backend = VmBackend.create(this, install)
         // The app creates the shared folder itself, so files adb pushes into it stay readable to the app.
         if (!devSession) File(install.sharedDir).mkdirs()
@@ -478,7 +483,7 @@ class MainActivity : Activity() {
             if (filling) return@setOnCheckedChangeListener
             if (devSession) {
                 devBackend = formSettings().backend
-                install = Installs.developer(Installs.current(this), devBackend, devVmDir, devAvfDisplay)
+                install = Installs.developer(Installs.current(this), devBackend, devVmDir, devAvfDisplay, devAvfNetwork)
             } else {
                 saveSettings()
             }
@@ -496,7 +501,23 @@ class MainActivity : Activity() {
             if (filling) return@setOnCheckedChangeListener
             if (devSession) {
                 devAvfDisplay = checked
-                install = Installs.developer(Installs.current(this), devBackend, devVmDir, devAvfDisplay)
+                install = Installs.developer(Installs.current(this), devBackend, devVmDir, devAvfDisplay, devAvfNetwork)
+            } else {
+                saveSettings()
+            }
+            backend = VmBackend.create(this, install)
+            render()
+        }
+        avfNetwork = switch(
+            advanced, "Network",
+            "AVF only: the guest gets a network card on the phone's connection (Wi-Fi or mobile data), " +
+                "through the network Android sets up for virtual machines. Off: no network.", s.avfNetwork,
+        )
+        avfNetwork.setOnCheckedChangeListener { _, checked ->
+            if (filling) return@setOnCheckedChangeListener
+            if (devSession) {
+                devAvfNetwork = checked
+                install = Installs.developer(Installs.current(this), devBackend, devVmDir, devAvfDisplay, devAvfNetwork)
             } else {
                 saveSettings()
             }
@@ -532,6 +553,7 @@ class MainActivity : Activity() {
         splitWx.isChecked = s.splitWx
         inProcess.isChecked = s.inProcess
         avfDisplay.isChecked = s.avfDisplay
+        avfNetwork.isChecked = s.avfNetwork
         extraArgs.setText(s.extraArgs)
         backendGroup.check(s.backend.ordinal + 1)
         securityGroup.check(s.security.ordinal + 1)
@@ -542,7 +564,7 @@ class MainActivity : Activity() {
         setAdvancedShown(
             s.vcpuAffinity != d.vcpuAffinity || s.splitWx != d.splitWx || s.inProcess != d.inProcess ||
                 s.backend != d.backend || s.security != d.security || s.extraArgs != d.extraArgs ||
-                s.avfDisplay != d.avfDisplay || devSession,
+                s.avfDisplay != d.avfDisplay || s.avfNetwork != d.avfNetwork || devSession,
         )
     }
 
@@ -799,7 +821,7 @@ class MainActivity : Activity() {
 
     private fun startVm() {
         saveSettings()
-        VmService.start(this, if (devSession) Installs.current(this) else install, devBackend, devVmDir, devAvfDisplay)
+        VmService.start(this, if (devSession) Installs.current(this) else install, devBackend, devVmDir, devAvfDisplay, devAvfNetwork)
         if (devSession) devRunsAtStart = VmState.runs
         if (backend.hasDisplay) openDisplay()
     }
@@ -818,6 +840,7 @@ class MainActivity : Activity() {
             security = Security.entries.firstOrNull { it.ordinal + 1 == securityGroup.checkedRadioButtonId } ?: d.security,
             extraArgs = extraArgs.text.toString().trim(),
             avfDisplay = avfDisplay.isChecked,
+            avfNetwork = avfNetwork.isChecked,
         )
     }
 
