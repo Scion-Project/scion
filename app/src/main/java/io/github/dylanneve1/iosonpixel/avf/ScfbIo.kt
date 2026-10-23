@@ -269,12 +269,13 @@ class ScfbIo(
         private val lock = Any()
         private var thread: Thread? = null
         private var control: ByteBuffer? = null
-        private val totals = LongArray(6)
+        /** frames, copy ns, max copy ns, seqlock waits, (unused), torn, partial frames, bytes copied, unchanged frames: scfb_present.c's control block. */
+        private val totals = LongArray(9)
 
         override fun setSurface(surface: Surface?, onSize: ((Int, Int) -> Unit)?) = synchronized(lock) {
             stopPresenting()
             if (surface == null) return@synchronized
-            val c = ByteBuffer.allocateDirect(64).order(ByteOrder.LITTLE_ENDIAN)
+            val c = ByteBuffer.allocateDirect(128).order(ByteOrder.LITTLE_ENDIAN)
             control = c
             val sink = SizeSink { w, h -> onSize?.invoke(w, h) }
             thread = Thread({
@@ -309,9 +310,11 @@ class ScfbIo(
         fun stats(): String? {
             val frames = totals[0]
             if (frames == 0L) return null
-            val (copyNs, maxNs, waits, retries, torn) = totals.drop(1)
-            return "$frames frames shown, copy avg %.2f ms, max %.2f ms; seqlock waits $waits, recopies $retries, shown torn $torn"
-                .format(copyNs / 1e6 / frames, maxNs / 1e6)
+            val (copyNs, maxNs, waits, _, torn) = totals.drop(1)
+            val partial = totals[6]
+            val bytes = totals[7]
+            return ("$frames frames shown ($partial only their damage, ${totals[8]} more unchanged and skipped), copy avg %.2f ms, max %.2f ms, avg %.0f KiB a frame; " +
+                "seqlock waits $waits, shown torn $torn").format(copyNs / 1e6 / frames, maxNs / 1e6, bytes / 1024.0 / frames)
         }
 
         override fun motion(event: MotionEvent, w: Int, h: Int): Boolean {
