@@ -11,6 +11,10 @@ import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.os.Bundle
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.AbsoluteSizeSpan
+import android.text.style.ForegroundColorSpan
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
@@ -21,6 +25,7 @@ import android.view.WindowInsets
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -83,8 +88,15 @@ class MainActivity : Activity() {
     private var filling = false
 
     private lateinit var log: TextView
-    private lateinit var logBox: View
-    private lateinit var logToggle: TextView
+
+    /** The secondary, collapsible cards under the main flow. */
+    private lateinit var storageSection: Ui.Section
+    private lateinit var settingsSection: Ui.Section
+    private lateinit var displaySection: Ui.Section
+    private lateinit var diagnosticsSection: Ui.Section
+    /** Edges for the auto-expanding sections (an import starting, a console-only VM starting). */
+    private var wasImporting = false
+    private var wasConsoleRunning = false
 
     private val onState: () -> Unit = { render() }
 
@@ -125,15 +137,19 @@ class MainActivity : Activity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(ui.dp(16), ui.dp(8), ui.dp(16), ui.dp(24))
+            setPadding(ui.dp(16), ui.dp(8), ui.dp(16), ui.dp(32))
             // Keep the soft keyboard from scrolling the page to the first field on launch.
             isFocusableInTouchMode = true
             requestFocus()
         }
 
         // Header
-        root.addView(ui.text(30f, Ui.TEXT).apply { text = getString(R.string.app_name) }, ui.lp(top = 16))
-        subtitle = ui.text(14f, Ui.MUTED).also { root.addView(it, ui.lp(top = 2)) }
+        root.addView(ui.text(28f, Ui.TEXT).apply {
+            text = getString(R.string.app_name)
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+            setPadding(ui.dp(4), 0, ui.dp(4), 0)
+        }, ui.lp(top = 16))
+        subtitle = ui.text(14f, Ui.MUTED).apply { setPadding(ui.dp(4), 0, ui.dp(4), 0) }.also { root.addView(it, ui.lp(top = 2)) }
         devBanner = ui.text(14f, Color.BLACK, bold = true).apply {
             background = ui.roundRect(Ui.WARN, 12)
             setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10))
@@ -143,29 +159,42 @@ class MainActivity : Activity() {
             }
         }.also { root.addView(it, ui.lp(top = 8)) }
 
+        // The main flow first (pick an install, start it, open its display), then the rest, collapsed.
         buildInstallsCard(root)
         buildStatusCard(root)
+        ui.groupLabel(root, "More")
         buildStorageCard(root)
         buildSettingsCard(root)
         buildDisplayCard(root)
         buildDiagnosticsCard(root)
         fillForm(install.settings)
+        savedInstanceState?.getBooleanArray(KEY_SECTIONS)?.let { open ->
+            sections().zip(open.toList()).forEach { (sec, o) -> sec.setExpanded(o) }
+        } ?: run {
+            // First launch of an install with no VM in its folder: show how to get one in.
+            if (!File(install.dir, install.manifest).isFile && !devSession) storageSection.setExpanded(true)
+        }
 
         scroll = ScrollView(this).apply {
             isFillViewport = true
             addView(root, MATCH_PARENT, WRAP_CONTENT)
-            // targetSdk 35+ is always edge-to-edge: the content starts under the
-            // status/action bar, which hid the first lines. Pad by the insets.
             clipToPadding = false
-            setOnApplyWindowInsetsListener { v, insets ->
-                val i = insets.getInsets(
-                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime(),
-                )
-                v.setPadding(i.left, i.top, i.right, i.bottom)
-                insets
+        }
+        // targetSdk 35+ is always edge-to-edge. The page scrolls under the system bars (padded by
+        // their insets so nothing ends up hidden), and a scrim keeps the status bar legible.
+        val statusScrim = View(this).apply { setBackgroundColor((Ui.BG and 0x00FFFFFF) or (0xF0 shl 24)) }
+        val frame = FrameLayout(this).apply {
+            addView(scroll, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            addView(statusScrim, FrameLayout.LayoutParams(MATCH_PARENT, 0))
+            setOnApplyWindowInsetsListener { _, insets ->
+                val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                val ime = insets.getInsets(WindowInsets.Type.ime())
+                scroll.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom))
+                statusScrim.layoutParams = statusScrim.layoutParams.apply { height = bars.top }
+                WindowInsets.CONSUMED
             }
         }
-        setContentView(scroll)
+        setContentView(frame)
 
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
@@ -213,10 +242,13 @@ class MainActivity : Activity() {
 
     private var devEnded = false
 
+    private fun sections() = listOf(storageSection, settingsSection, displaySection, diagnosticsSection)
+
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putBoolean(KEY_DEV_ENDED, devEnded)
         outState.putInt(KEY_DEV_RUNS, devRunsAtStart)
+        outState.putBooleanArray(KEY_SECTIONS, sections().map { it.expanded }.toBooleanArray())
     }
 
     /** (Re)reads the selected install and makes its backend. */
@@ -230,8 +262,9 @@ class MainActivity : Activity() {
 
     /** The install list: pick one, add, rename, remove. Only one VM runs at a time. */
     private fun buildInstallsCard(root: LinearLayout) {
-        val card = ui.card(root, "Installs", "Each install has its own VM folder, engine and settings.")
-        installGroup = RadioGroup(this).also { card.addView(it, ui.lp(top = 8)) }
+        // (The Add dialog explains what an install is; the list itself shows engine and storage.)
+        val card = ui.card(root, "Installs")
+        installGroup = RadioGroup(this).also { card.addView(it, ui.lp(top = 4)) }
         installGroup.setOnCheckedChangeListener { _, checked ->
             if (filling) return@setOnCheckedChangeListener
             val id = installIds[checked] ?: return@setOnCheckedChangeListener
@@ -242,14 +275,16 @@ class MainActivity : Activity() {
             fillForm(install.settings)
             render()
         }
-        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        addInstall = ui.button("Add", Ui.Style.TONAL) { addDialog() }
-        renameInstall = ui.button("Rename", Ui.Style.OUTLINED) { renameDialog() }
-        removeInstall = ui.button("Remove", Ui.Style.OUTLINED) { removeDialog() }
-        buttons.addView(addInstall, ui.lp(width = 0, weight = 1f))
-        buttons.addView(renameInstall, ui.lp(start = 8, width = 0, weight = 1f))
-        buttons.addView(removeInstall, ui.lp(start = 8, width = 0, weight = 1f))
-        card.addView(buttons, ui.lp(top = 12))
+        // Natural-width buttons in a wrapping row: on a narrow screen a button moves to the next
+        // line instead of its label breaking.
+        val buttons = ui.flow()
+        addInstall = ui.button("+ Add", Ui.Style.TONAL, compact = true) { addDialog() }
+        renameInstall = ui.button("Rename", Ui.Style.OUTLINED, compact = true) { renameDialog() }
+        removeInstall = ui.button("Remove", Ui.Style.OUTLINED, compact = true) { removeDialog() }
+        buttons.addView(addInstall)
+        buttons.addView(renameInstall)
+        buttons.addView(removeInstall)
+        card.addView(buttons, ui.lp(top = 8))
     }
 
     private fun renderInstalls(enabled: Boolean) {
@@ -262,9 +297,18 @@ class MainActivity : Activity() {
             installIds[id] = i.id
             installGroup.addView(RadioButton(this).apply {
                 this.id = id
-                text = "${i.name}\n${i.backend.label} · ${if (i.internal) "internal storage" else "shared storage"}"
-                setTextColor(Ui.TEXT)
-                buttonTintList = ColorStateList.valueOf(ui.accent)
+                minHeight = ui.dp(48)
+                text = SpannableStringBuilder(i.name).apply {
+                    append("\n")
+                    val from = length
+                    append("${i.backend.label} · ${if (i.internal) "internal storage" else "shared storage"}")
+                    setSpan(AbsoluteSizeSpan(13, true), from, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    setSpan(ForegroundColorSpan(Ui.MUTED), from, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+                textSize = 15f
+                setTextColor(ui.enabledList(Ui.TEXT, Ui.DISABLED_FG))
+                buttonTintList = ui.enabledList(ui.accent, Ui.DISABLED_FG)
+                setPadding(ui.dp(8), ui.dp(8), 0, ui.dp(8))
                 isEnabled = enabled && !devSession
             })
             if (i.id == (if (devSession) Installs.current(this).id else install.id)) installGroup.check(id)
@@ -376,7 +420,7 @@ class MainActivity : Activity() {
 
     /** Status, readiness checks and the Start / Stop / Display actions. */
     private fun buildStatusCard(root: LinearLayout) {
-        val card = ui.card(root, "Virtual machine")
+        val card = ui.card(root, "Virtual machine", primary = true)
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -386,33 +430,39 @@ class MainActivity : Activity() {
         card.addView(row, ui.lp(top = 12))
         statusDetail = ui.text(13f, Ui.MUTED).also { card.addView(it, ui.lp(top = 4)) }
 
+        // Start gets the full width; Display and Stop share the row under it.
+        start = ui.button("Start", Ui.Style.FILLED) { startVm() }.apply {
+            textSize = 16f
+            minHeight = ui.dp(52)
+            minimumHeight = ui.dp(52)
+        }
+        card.addView(start, ui.lp(top = 16))
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        start = ui.button("Start", Ui.Style.FILLED) { startVm() }
         stop = ui.button("Stop", Ui.Style.DANGER) { VmService.stop(this) }
         display = ui.button("Display", Ui.Style.TONAL) { openDisplay() }
-        buttons.addView(start, ui.lp(width = 0, weight = 1.3f))
-        buttons.addView(display, ui.lp(start = 8, width = 0, weight = 1f))
+        buttons.addView(display, ui.lp(width = 0, weight = 1f))
         buttons.addView(stop, ui.lp(start = 8, width = 0, weight = 1f))
-        card.addView(buttons, ui.lp(top = 16))
+        card.addView(buttons, ui.lp(top = 8))
 
         ui.divider(card)
-        checksSummary = ui.text(14f, Ui.TEXT, bold = true).also { card.addView(it, ui.lp(top = 14)) }
+        checksSummary = ui.text(15f, Ui.TEXT, bold = true).also { card.addView(it, ui.lp(top = 16)) }
         checks = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }.also { card.addView(it, ui.lp(top = 4)) }
     }
 
     /** Where the VM folder lives, and getting files into it. */
     private fun buildStorageCard(root: LinearLayout) {
-        val card = ui.card(root, "VM files")
-        location = ui.text(15f, Ui.TEXT).also { card.addView(it, ui.lp(top = 10)) }
+        storageSection = ui.Section(root, "VM files", "")
+        val card = storageSection.body
+        location = ui.text(15f, Ui.TEXT).also { card.addView(it, ui.lp(top = 4)) }
         locationPath = ui.text(12f, Ui.MUTED, mono = true, selectable = true).also { card.addView(it, ui.lp(top = 2)) }
         locationHint = ui.text(13f, Ui.MUTED, selectable = true).also { card.addView(it, ui.lp(top = 12)) }
 
-        importButton = ui.button("Import VM folder…", Ui.Style.TONAL) {
+        importButton = ui.wideButton("Import VM folder…", Ui.Style.TONAL) {
             if (ImportState.running) ImportService.cancel(this)
             else startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_IMPORT)
         }.also { card.addView(it, ui.lp(top = 16)) }
         // "Keep VM in internal storage": moves the folder out of FUSE-backed shared storage.
-        moveButton = ui.button("", Ui.Style.OUTLINED) {
+        moveButton = ui.wideButton("", Ui.Style.OUTLINED) {
             if (ImportState.running) ImportService.cancel(this)
             else ImportService.move(this, install, toInternal = moveToInternal())
         }.also { card.addView(it, ui.lp(top = 8)) }
@@ -425,7 +475,11 @@ class MainActivity : Activity() {
 
     private fun buildSettingsCard(root: LinearLayout) {
         val s = VmSettings()
-        val card = ui.card(root, "Settings", "For the selected install. Saved when you start the VM or leave this screen.")
+        settingsSection = ui.Section(root, "Settings", "")
+        val card = settingsSection.body
+        card.addView(ui.text(13f, Ui.MUTED).apply {
+            text = "For the selected install. Saved when you start the VM or leave this screen."
+        }, ui.lp(top = 4))
         ram = ui.field(
             card, "Guest RAM", s.ramGb.toString(), suffix = "GiB",
             help = "At most ${VmSettings.MAX_RAM_GB}, the iPhone 11's maximum.",
@@ -476,7 +530,8 @@ class MainActivity : Activity() {
                 setTextColor(Ui.TEXT)
                 buttonTintList = ColorStateList.valueOf(ui.accent)
                 isEnabled = b.implemented
-                if (!b.implemented) alpha = 0.5f
+                setTextColor(ui.enabledList(Ui.TEXT, Ui.DISABLED_FG))
+                buttonTintList = ui.enabledList(ui.accent, Ui.DISABLED_FG)
             })
         }
         // The checks and the header depend on it, so apply it right away.
@@ -585,7 +640,8 @@ class MainActivity : Activity() {
     /** Settings → Display: app-wide, saved as soon as they change (read when the display opens). */
     private fun buildDisplayCard(root: LinearLayout) {
         var p = DisplayPrefs.load(this)
-        val card = ui.card(root, "Display", "How the guest screen is shown. For every install.")
+        displaySection = ui.Section(root, "Display", "How the guest screen is shown. For every install.")
+        val card = displaySection.body
         fun save(next: DisplayPrefs) { p = next; p.save(this) }
         val border = switch(
             card, "Border around the guest screen",
@@ -644,28 +700,24 @@ class MainActivity : Activity() {
     }
 
     private fun buildDiagnosticsCard(root: LinearLayout) {
-        val card = ui.card(root, "Diagnostics")
-        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        actions.addView(ui.button("Share debug bundle", Ui.Style.TONAL) { DebugBundle.buildAndShare(this, it) },
-            ui.lp(width = 0, weight = 1f))
-        actions.addView(ui.button("Copy log", Ui.Style.OUTLINED) { copyLog() }, ui.lp(start = 8, width = WRAP_CONTENT))
-        card.addView(actions, ui.lp(top = 12))
+        diagnosticsSection = ui.Section(root, "Diagnostics", "Debug bundle and the VM's output")
+        val card = diagnosticsSection.body
+        val actions = ui.flow()
+        actions.addView(ui.button("Share debug bundle", Ui.Style.TONAL, compact = true) { DebugBundle.buildAndShare(this, it) })
+        actions.addView(ui.button("Copy log", Ui.Style.OUTLINED, compact = true) { copyLog() })
+        card.addView(actions, ui.lp(top = 4))
 
-        logToggle = ui.text(14f, ui.accent, bold = true).apply {
-            setPadding(0, ui.dp(12), 0, ui.dp(4))
-            setOnClickListener { setLogShown(logBox.visibility != View.VISIBLE) }
-        }.also { card.addView(it, ui.lp(top = 8)) }
+        card.addView(ui.text(14f, Ui.TEXT, bold = true).apply { text = "Output" }, ui.lp(top = 16))
         log = ui.text(11f, Ui.TEXT, mono = true, selectable = true).apply {
             setLineSpacing(0f, 1.05f)
             setHorizontallyScrolling(true)
         }
         // Long QEMU lines scroll sideways instead of wrapping into an unreadable column.
-        logBox = HorizontalScrollView(this).apply {
+        HorizontalScrollView(this).apply {
             background = ui.roundRect(Ui.FIELD, 12, Ui.OUTLINE)
             setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10))
             addView(log, WRAP_CONTENT, WRAP_CONTENT)
         }.also { card.addView(it, ui.lp(top = 6)) }
-        setLogShown(true)
     }
 
     private fun switch(parent: LinearLayout, title: String, help: String, checked: Boolean): Switch {
@@ -683,19 +735,15 @@ class MainActivity : Activity() {
                 intArrayOf(ui.tonal, Ui.OUTLINE),
             )
         }
-        parent.addView(sw, ui.lp(top = 16))
-        parent.addView(ui.text(12.5f, Ui.MUTED).apply { text = help }, ui.lp(top = 0))
+        sw.setPadding(0, ui.dp(4), 0, ui.dp(4))
+        parent.addView(sw, ui.lp(top = 12))
+        parent.addView(ui.text(12.5f, Ui.MUTED).apply { text = help; setPadding(0, 0, ui.dp(56), 0) }, ui.lp(top = 0))
         return sw
     }
 
     private fun setAdvancedShown(shown: Boolean) {
         advanced.visibility = if (shown) View.VISIBLE else View.GONE
-        advancedToggle.text = if (shown) "Hide advanced  ▴" else "Advanced  ▾"
-    }
-
-    private fun setLogShown(shown: Boolean) {
-        logBox.visibility = if (shown) View.VISIBLE else View.GONE
-        logToggle.text = (if (shown) "Hide " else "Show ") + "output" + if (shown) "  ▴" else "  ▾"
+        advancedToggle.text = if (shown) "Hide advanced settings  ▴" else "Advanced settings  ▾"
     }
 
     private fun copyLog() {
@@ -755,7 +803,7 @@ class MainActivity : Activity() {
             notice != null -> notice + (lastExit?.let { "\nLast exit: $it" } ?: "")
             lastExit != null -> "Last exit: $lastExit"
             st == VmState.Status.RUNNING && backend.hasDisplay -> "Open the display to use the iPhone."
-            st == VmState.Status.RUNNING -> "No display yet: the guest console is in the output below."
+            st == VmState.Status.RUNNING -> "No display yet: the guest console is in Diagnostics, below."
             else -> ""
         }
         statusDetail.visibility = if (statusDetail.text.isEmpty()) View.GONE else View.VISIBLE
@@ -766,20 +814,15 @@ class MainActivity : Activity() {
             "$failing ${if (failing == 1) "thing needs" else "things need"} fixing before you can start"
         checksSummary.setTextColor(if (failing == 0) Ui.GOOD else Ui.TEXT)
         checks.removeAllViews()
-        for (c in list.sortedBy { it.ok }) {
-            checks.addView(LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                addView(ui.text(13f, if (c.ok) Ui.GOOD else Ui.BAD, bold = true).apply {
-                    text = if (c.ok) "✓" else "✗"
-                }, ui.lp(width = ui.dp(20)))
-                addView(ui.text(13f, if (c.ok) Ui.MUTED else Ui.TEXT, selectable = true).apply { text = c.text },
-                    ui.lp(width = 0, weight = 1f))
-            }, ui.lp(top = 6))
-        }
+        // What blocks Start first, then what only warns, then what's fine.
+        for (c in list.sortedWith(compareBy({ it.ok }, { !it.blocking }))) checks.addView(checkRow(c), ui.lp(top = if (c.ok) 6 else 10))
 
         val internal = install.internal
         val sharedHasVm = File(install.sharedDir, install.manifest).isFile
         location.text = if (internal) "In use: internal app storage" else "In use: shared storage"
+        storageSection.setSummary(location.text)
+        val form = formSettings()
+        settingsSection.setSummary("${form.ramGb} GiB RAM · ${form.smp} vCPUs · ${install.backend.label}")
         locationPath.text = install.dir.absolutePath
         locationHint.text = buildString {
             append("adb push your prepared files to\n").append(install.sharedDir)
@@ -805,6 +848,12 @@ class MainActivity : Activity() {
         if (ImportState.total > 0) importProgress.progress = (ImportState.copied * 1000 / ImportState.total).toInt()
         importStatus.text = ImportState.message
         importStatus.visibility = if (ImportState.message.isEmpty()) View.GONE else View.VISIBLE
+        // Show the progress when an import or move starts, and the console when a VM without a display starts.
+        if (importing && !wasImporting) storageSection.setExpanded(true)
+        wasImporting = importing
+        val consoleRunning = st == VmState.Status.RUNNING && !backend.hasDisplay
+        if (consoleRunning && !wasConsoleRunning) diagnosticsSection.setExpanded(true)
+        wasConsoleRunning = consoleRunning
 
         renderInstalls(enabled = st == VmState.Status.STOPPED && !importing)
         start.isEnabled = st == VmState.Status.STOPPED && !importing && failing == 0
@@ -815,6 +864,51 @@ class MainActivity : Activity() {
         log.text = if (text.isEmpty()) "No output yet." else
             (if (!ranHere) "Output of ${VmState.install?.name ?: "another install"}:\n" else "") + text
         log.setTextColor(if (text.isEmpty()) Ui.MUTED else Ui.TEXT)
+    }
+
+    /**
+     * One readiness check: the mark and the first line side by side, and below them, indented, any
+     * path or command it carries, in a smaller monospace so long paths wrap at their slashes.
+     */
+    private fun checkRow(c: VmBackend.Check): View {
+        val (head, code) = splitCheck(c.text)
+        val warnOnly = !c.ok && !c.blocking
+        val markColor = when {
+            c.ok -> Ui.GOOD
+            warnOnly -> Ui.WARN
+            else -> Ui.BAD
+        }
+        val item = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        // The mark and the label stay adjacent siblings: the emulator smoke test matches them as a pair.
+        item.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(ui.text(if (c.ok) 13f else 14f, markColor, bold = true).apply {
+                text = if (c.ok) "✓" else if (warnOnly) "!" else "✗"
+            }, ui.lp(width = ui.dp(22)))
+            addView(ui.text(if (c.ok) 13f else 14f, if (c.ok) Ui.MUTED else Ui.TEXT, bold = !c.ok, selectable = true).apply {
+                text = head
+            }, ui.lp(width = 0, weight = 1f))
+        })
+        // 10.5 sp monospace fits a 32-character path component on a 320 dp screen.
+        if (code != null) item.addView(ui.text(10.5f, if (c.ok) Ui.MUTED else Ui.TEXT, mono = true, selectable = true).apply {
+            text = code
+            background = ui.roundRect(Ui.FIELD, 8)
+            setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6))
+            setLineSpacing(0f, 1.05f)
+        }, ui.lp(top = 4, start = 22))
+        return item
+    }
+
+    /** Splits a check's text into its sentence and the path or command lines it ends with (if any). */
+    private fun splitCheck(text: String): Pair<String, String?> {
+        val lines = text.lines()
+        var head = lines.first().trimEnd()
+        val code = lines.drop(1).map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+        PATH_AT_END.find(head)?.let { m ->
+            head = head.substring(0, m.range.first).trimEnd()
+            code.add(0, m.groupValues[1])
+        }
+        return head to code.takeIf { it.isNotEmpty() }?.joinToString("\n")
     }
 
     /** The move button's direction: into internal storage unless the VM is already there and nothing newer is in shared. */
@@ -894,5 +988,8 @@ class MainActivity : Activity() {
         const val EXTRA_START = "start"
         const val KEY_DEV_ENDED = "dev_session_ended"
         const val KEY_DEV_RUNS = "dev_session_runs"
+        const val KEY_SECTIONS = "sections_expanded"
+        /** An absolute path (two or more components) ending a check's sentence. */
+        val PATH_AT_END = Regex("""\s(/[^\s/]+(?:/[^\s/]*)+)$""")
     }
 }
