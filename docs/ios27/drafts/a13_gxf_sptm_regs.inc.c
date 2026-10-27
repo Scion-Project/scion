@@ -1,6 +1,6 @@
 /*
  * Reference snippet: the SPTM/TXM register block as implemented in
- * dylanneve1/Inferno PR (branch ios27/gxf), hw/arm/a13_gxf.c. Backing fields
+ * Scion-Project/pyre PR (branch ios27/gxf), hw/arm/a13_gxf.c. Backing fields
  * live in env->gxf (target/arm/cpu.h). Registered from apple_a13_init_gxf()
  * via define_arm_cp_regs(cpu, apple_a13_sptm_cp_reginfo).
  *

@@ -9,18 +9,18 @@ future work.
 
 | Repo | Branch | Role |
 |---|---|---|
-| `dylanneve1/scion` | `main` | This repo: Android app, build scripts, tools, docs |
-| `dylanneve1/Inferno` | `pixel` | Fork of `ChefKissInc/Inferno` with the Android/Tensor patches; submodule at `third_party/inferno` |
+| `Scion-Project/scion` | `main` | This repo: Android app, build scripts, tools, docs |
+| `Scion-Project/pyre` | `pixel` | Fork of `ChefKissInc/Inferno` with the Android/Tensor patches; submodule at `third_party/inferno` |
 | `dylanneve1/qemu-ios` | — | Fork of `devos50/qemu-ios` (legacy iPod/iPhone emulator), for reference only |
 | `dylanneve1/darwin-vm` | — | Fork of `jprx/darwin-vm` (boots modern iOS to a shell, no UI), for reference only |
 
 `TrungNguyen1909/qemu-t8030` is in the same GitHub fork network as Inferno,
-so `dylanneve1/Inferno` covers it too. That upstream is archived (2022).
+so `Scion-Project/pyre` covers it too. That upstream is archived (2022).
 Inferno is the active successor: last push Sep 2026, ~4k stars.
 
 ## Moving to Inferno `dev` (2026-10-21)
 
-The submodule tracks `dylanneve1/Inferno@master`, our main line (fast-forwarded from `pixel-dev`): upstream `dev` (314
+The submodule tracks `Scion-Project/pyre@master`, our main line (fast-forwarded from `pixel-dev`): upstream `dev` (314
 commits past `master`) with our Android/Tensor patches rebased on top. `dev`
 is a large restructure, and several things the old notes relied on are gone:
 
@@ -260,9 +260,9 @@ frankel/blazer/mustang/rango). Paths are in that repo.
   `pixel/lga/*/config_kernel.h` lists `RGX_BVNC_CORE_KM_HEADER "cores/rgxcore_km_71.2.2448.1212.h"`.
 * GKI `CONFIG_KVM=y` (pKVM), exposed to apps through AVF only (crosvm, adb-granted
   development permissions). The QEMU/TCG backend stays the default; AVF is explored in
-  [scion-avf](https://github.com/dylanneve1/scion-avf).
+  [scion-avf](https://github.com/Scion-Project/scion-avf).
 
-## Patches on `dylanneve1/Inferno@pixel`
+## Patches on `Scion-Project/pyre@pixel`
 
 1. `util/oslib-posix.c`: `qemu_shm_alloc` uses `memfd_create` on Android.
 2. `accel/tcg/tcg-accel-ops-mttcg.c`: `QEMU_VCPU_AFFINITY` per-vCPU cpu-sets.
@@ -297,8 +297,8 @@ On `pixel-dev` (paths are `hw/arm/…` there), additionally:
 ## Reproduce the build
 
 ```sh
-git clone --recurse-submodules https://github.com/dylanneve1/scion
-cd ios-on-pixel
+git clone --recurse-submodules https://github.com/Scion-Project/scion
+cd scion
 brew install meson ninja pkgconf cmake    # plus Android SDK + NDK r28
 native/build-android.sh                   # deps + QEMU → app/src/main/jniLibs
 JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug

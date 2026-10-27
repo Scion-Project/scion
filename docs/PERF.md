@@ -132,14 +132,14 @@ runs on the same emulator, under a lock so runs never overlap.
 
 | PR | Change |
 |---|---|
-| [Inferno#22](https://github.com/dylanneve1/pyre/pull/22) | Jump-cache hit in `lookup_and_goto_ptr` with the TB state computed inline: no indirect call, no stack frame, one compare branch. About 115 → 69 host instructions per hit |
-| [Inferno#23](https://github.com/dylanneve1/pyre/pull/23) | The GXF-banked TPIDR/SPSR/ELR/ESR/FAR_EL1 become plain field loads/stores, with the GL1 copy chosen at translation time from the TB's MMU index. Before, every access called two helpers (`lookup_cp_reg` + `get/set_cp_reg64`). Adds the `gxf_banked_el1` a13-test to CI |
-| [Inferno#25](https://github.com/dylanneve1/pyre/pull/25) | A PCREL TB invalidation clears the TB's 64 possible jump-cache slots instead of every vCPU's whole 16k-entry cache |
-| [Inferno#26](https://github.com/dylanneve1/pyre/pull/26) | Writes to those storage-only registers, and to their `_GL11` views, no longer end the TB. They caused about ⅔ of the 496k sysreg-write TB exits per boot |
-| [Inferno#27](https://github.com/dylanneve1/pyre/pull/27) | `hw/arm/tests/run-a13-bench.py` + `tcg_bench.S`: the microbenchmarks below, bare metal on the `a13-test` machine, no Apple code |
-| [Inferno#28](https://github.com/dylanneve1/pyre/pull/28) | t8030 keeps the SEP core powered off when its ROM can only idle (a loop of only WFI/WFE/NOP/YIELD/`B`, like the `wfi` and `b .` placeholders), so placeholder SEP inputs no longer spin a host core. Real SEPROMs are never matched. See [below](#placeholder-sep-roms-inferno28) |
+| [Inferno#22](https://github.com/Scion-Project/pyre/pull/22) | Jump-cache hit in `lookup_and_goto_ptr` with the TB state computed inline: no indirect call, no stack frame, one compare branch. About 115 → 69 host instructions per hit |
+| [Inferno#23](https://github.com/Scion-Project/pyre/pull/23) | The GXF-banked TPIDR/SPSR/ELR/ESR/FAR_EL1 become plain field loads/stores, with the GL1 copy chosen at translation time from the TB's MMU index. Before, every access called two helpers (`lookup_cp_reg` + `get/set_cp_reg64`). Adds the `gxf_banked_el1` a13-test to CI |
+| [Inferno#25](https://github.com/Scion-Project/pyre/pull/25) | A PCREL TB invalidation clears the TB's 64 possible jump-cache slots instead of every vCPU's whole 16k-entry cache |
+| [Inferno#26](https://github.com/Scion-Project/pyre/pull/26) | Writes to those storage-only registers, and to their `_GL11` views, no longer end the TB. They caused about ⅔ of the 496k sysreg-write TB exits per boot |
+| [Inferno#27](https://github.com/Scion-Project/pyre/pull/27) | `hw/arm/tests/run-a13-bench.py` + `tcg_bench.S`: the microbenchmarks below, bare metal on the `a13-test` machine, no Apple code |
+| [Inferno#28](https://github.com/Scion-Project/pyre/pull/28) | t8030 keeps the SEP core powered off when its ROM can only idle (a loop of only WFI/WFE/NOP/YIELD/`B`, like the `wfi` and `b .` placeholders), so placeholder SEP inputs no longer spin a host core. Real SEPROMs are never matched. See [below](#placeholder-sep-roms-inferno28) |
 
-**Reliability.** Inferno#41 (IOMFB simulator-check race) removes a ~2–3% boot-time guest panic (`rt_bandwidth_setup`, data abort); no performance change. See [issue #100](https://github.com/dylanneve1/scion/issues/100).
+**Reliability.** Inferno#41 (IOMFB simulator-check race) removes a ~2–3% boot-time guest panic (`rt_bandwidth_setup`, data abort); no performance change. See [issue #100](https://github.com/Scion-Project/scion/issues/100).
 
 **Setup.** Android emulator `sdk_gphone64_arm64` on the Mac mini (8 vCPUs, 4 GB; host load
 about 3–5 from other work). The QEMU binaries are the CI `qemu-android-arm64` artifacts,
@@ -237,10 +237,10 @@ calls refilling the softmmu TLB and jump cache.
 
 | PR | Change |
 |---|---|
-| [Inferno#30](https://github.com/dylanneve1/pyre/pull/30), [#32](https://github.com/dylanneve1/pyre/pull/32), [#33](https://github.com/dylanneve1/pyre/pull/33), [#38](https://github.com/dylanneve1/pyre/pull/38) | Guest FP/SIMD runs on the host FPU when the guest FPCR is in the host's mode (RNE, no FZ/DN/AH, no traps): vector and scalar FADD/FSUB/FMUL/FMLA/FDIV/…, emitted inline as host FP instructions; anything else stays on softfloat. A startup self-test compares every native kernel with softfloat and falls back if any differs. **On by default** on AArch64 hosts; `-accel tcg,native-fp=off` turns it off. Docs: Inferno `docs/NATIVE-FP.md` |
-| [Inferno#34](https://github.com/dylanneve1/pyre/pull/34) | SPRR configuration/permission writes from EL1 flush the TLB when they change the value (entries kept the previous thread's permissions) |
-| [Inferno#37](https://github.com/dylanneve1/pyre/pull/37) | The TLB's `n_used_entries` no longer wraps below zero (it made TLBs double for no reason: 46 of 164 resizes per boot) |
-| [Inferno#31](https://github.com/dylanneve1/pyre/pull/31), [#36](https://github.com/dylanneve1/pyre/pull/36) | **ASID TLB contexts**: on a TTBR ASID switch the outgoing TLBs and jump cache are kept aside (8 per vCPU) and swapped back in when the guest returns, instead of being dropped and refilled. Kept-aside copies get every invalidation the live ones get. `-accel tcg,asid-tlbs=0` turns it off. Docs: Inferno `docs/ASID-TLB.md` |
+| [Inferno#30](https://github.com/Scion-Project/pyre/pull/30), [#32](https://github.com/Scion-Project/pyre/pull/32), [#33](https://github.com/Scion-Project/pyre/pull/33), [#38](https://github.com/Scion-Project/pyre/pull/38) | Guest FP/SIMD runs on the host FPU when the guest FPCR is in the host's mode (RNE, no FZ/DN/AH, no traps): vector and scalar FADD/FSUB/FMUL/FMLA/FDIV/…, emitted inline as host FP instructions; anything else stays on softfloat. A startup self-test compares every native kernel with softfloat and falls back if any differs. **On by default** on AArch64 hosts; `-accel tcg,native-fp=off` turns it off. Docs: Inferno `docs/NATIVE-FP.md` |
+| [Inferno#34](https://github.com/Scion-Project/pyre/pull/34) | SPRR configuration/permission writes from EL1 flush the TLB when they change the value (entries kept the previous thread's permissions) |
+| [Inferno#37](https://github.com/Scion-Project/pyre/pull/37) | The TLB's `n_used_entries` no longer wraps below zero (it made TLBs double for no reason: 46 of 164 resizes per boot) |
+| [Inferno#31](https://github.com/Scion-Project/pyre/pull/31), [#36](https://github.com/Scion-Project/pyre/pull/36) | **ASID TLB contexts**: on a TTBR ASID switch the outgoing TLBs and jump cache are kept aside (8 per vCPU) and swapped back in when the guest returns, instead of being dropped and refilled. Kept-aside copies get every invalidation the live ones get. `-accel tcg,asid-tlbs=0` turns it off. Docs: Inferno `docs/ASID-TLB.md` |
 
 **Microbenchmarks** (`run-a13-bench.py`, a13-test, Android emulator, median of 5):
 
@@ -282,8 +282,8 @@ Inferno `docs/SOFTMMU.md`.
 
 | PR | Change |
 |---|---|
-| [Inferno#39](https://github.com/dylanneve1/pyre/pull/39) | The inline TLB lookup before every guest load/store is 8 host instructions (+1 if unaligned) instead of 10: the `sub` that formed the `CPUTLBDescFast` address folds into the `ldp`, and with the addend moved next to the comparators one `ldp` loads comparator and addend. Generated code per TB in the boot: 248 → 233 bytes. Adds microbenchmarks w10 (TLB-hit loads/stores) and w11 (refills) |
-| [Inferno#40](https://github.com/dylanneve1/pyre/pull/40) | The softmmu TLB no longer shrinks below 1024 entries (was 64; XNU's frequent flushes kept it at 64–256): page-table walks in a host boot 1.2–1.4M → 0.5M, victim-TLB hits 2–5.7M → 0.4–1M. `tlb_reset_dirty` (run whenever a page gains translated code) now scans only TLBs filled since their last flush and skips empty entries without reading `CPUTLBEntryFull`; without that, a larger TLB made the boot slower. `-accel tcg,x-tlb-bits=N` sets the floor (6 = old) |
+| [Inferno#39](https://github.com/Scion-Project/pyre/pull/39) | The inline TLB lookup before every guest load/store is 8 host instructions (+1 if unaligned) instead of 10: the `sub` that formed the `CPUTLBDescFast` address folds into the `ldp`, and with the addend moved next to the comparators one `ldp` loads comparator and addend. Generated code per TB in the boot: 248 → 233 bytes. Adds microbenchmarks w10 (TLB-hit loads/stores) and w11 (refills) |
+| [Inferno#40](https://github.com/Scion-Project/pyre/pull/40) | The softmmu TLB no longer shrinks below 1024 entries (was 64; XNU's frequent flushes kept it at 64–256): page-table walks in a host boot 1.2–1.4M → 0.5M, victim-TLB hits 2–5.7M → 0.4–1M. `tlb_reset_dirty` (run whenever a page gains translated code) now scans only TLBs filled since their last flush and skips empty entries without reading `CPUTLBEntryFull`; without that, a larger TLB made the boot slower. `-accel tcg,x-tlb-bits=N` sets the floor (6 = old) |
 
 **Restore boot** (`restore_bench.py`, `-smp 4`, `wfi` SEP placeholder, CI Android binaries,
 interleaved):
