@@ -1,8 +1,11 @@
 package io.github.dylanneve1.iosonpixel
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.View
@@ -12,6 +15,8 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.LinearLayout
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import io.github.dylanneve1.iosonpixel.HardwareButton as Key
 
 /**
@@ -30,6 +35,9 @@ class DisplayActivity : Activity() {
     private var prefs = DisplayPrefs()
     /** The largest system gesture inset (px), for the automatic border width. */
     private var gestureInset = 0
+    /** Pinning was asked for once while this screen is open; declining it isn't asked again. */
+    private var pinAsked = false
+    private var backCallback: OnBackInvokedCallback? = null
     private val hideBar = Runnable { if (prefs.bar == DisplayPrefs.BarMode.AUTO_HIDE) bar.visibility = View.GONE }
     private val onState: () -> Unit = {
         if (VmState.status == VmState.Status.STOPPED && !attachOnly) {
@@ -71,6 +79,7 @@ class DisplayActivity : Activity() {
             addButton("Power", onLong = { backend.press(Key.POWER, holdMs = 3000) }) {
                 backend.press(Key.POWER)
             }
+            addButton("Exit") { exit() }
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -96,10 +105,63 @@ class DisplayActivity : Activity() {
             edge.onTwoFingerTap = { showBar() }
         }
 
+        hideSystemBars()
+
+        // Android's back gesture must never close the guest screen: it shows the bar (with Exit)
+        // instead. Leaving is the Exit button, or Android's home gesture when not pinned.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            backCallback = OnBackInvokedCallback { showBar() }.also {
+                onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, it)
+            }
+        }
+    }
+
+    @Deprecated("Back before Android 13 (no OnBackInvokedCallback)")
+    override fun onBackPressed() = showBar()
+
+    override fun onResume() {
+        super.onResume()
+        hideSystemBars() // the pinning prompt and transient bars can bring them back
+        if (prefs.pin && !pinAsked && !pinned()) {
+            pinAsked = true
+            // Not a device-owner app, so this is Android's app pinning: it asks once to confirm.
+            // Pinned, home, recents and the notification shade are off until Exit (or the
+            // system's own unpin gesture: swipe up and hold).
+            try {
+                startLockTask()
+            } catch (e: Exception) {
+                Log.w(TAG, "startLockTask failed", e)
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            backCallback?.let { onBackInvokedDispatcher.unregisterOnBackInvokedCallback(it) }
+        }
+        super.onDestroy()
+    }
+
+    private fun hideSystemBars() {
         window.insetsController?.apply {
             hide(WindowInsets.Type.systemBars())
             systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
+    }
+
+    private fun pinned() =
+        getSystemService(ActivityManager::class.java).lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+
+    /** Unpins (the whole task would otherwise stay pinned on the app's main screen) and closes. */
+    private fun exit() {
+        if (pinned()) {
+            try {
+                stopLockTask()
+            } catch (e: Exception) {
+                Log.w(TAG, "stopLockTask failed", e)
+            }
+        }
+        finish()
     }
 
     override fun onStart() {
@@ -187,6 +249,7 @@ class DisplayActivity : Activity() {
 
     companion object {
         const val EXTRA_ATTACH = "attach"
+        private const val TAG = "DisplayActivity"
         const val BAR_SHOWN_MS = 3000L
     }
 }
