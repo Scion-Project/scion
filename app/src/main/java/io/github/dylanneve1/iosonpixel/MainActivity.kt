@@ -611,6 +611,13 @@ class MainActivity : Activity() {
                 "exactly on the guest's edge: swipe up from the bottom, down from the top-right corner.", p.snap,
         )
         snap.setOnCheckedChangeListener { _, on -> save(p.copy(snap = on)) }
+        val pin = switch(
+            card, "Pin the guest screen",
+            "While the guest screen is open, Android's app pinning keeps you in it: no home, recents or " +
+                "notification shade. Android asks to confirm the first time. Leave with Exit on the buttons " +
+                "bar, or Android's unpin gesture (swipe up and hold).", p.pin,
+        )
+        pin.setOnCheckedChangeListener { _, on -> save(p.copy(pin = on)) }
 
         card.addView(ui.text(14f, Ui.TEXT, bold = true).apply { text = "Hardware buttons bar" }, ui.lp(top = 20))
         val group = RadioGroup(this).also { card.addView(it, ui.lp(top = 4)) }
@@ -630,10 +637,9 @@ class MainActivity : Activity() {
             ids.entries.firstOrNull { it.value == id }?.let { save(p.copy(bar = it.key)) }
         }
         card.addView(ui.text(12.5f, Ui.MUTED).apply {
-            text = "Vol −, Vol +, Home, Apps and Power under the guest screen. Auto-hide: hidden until you tap the " +
+            text = "Vol −, Vol +, Home, Apps, Power and Exit under the guest screen. Auto-hide: hidden until you tap the " +
                 "border or tap with two fingers, and hidden again 3 s after the last press. Hidden, the guest " +
-                "screen uses the space. Android's home gesture can't be turned off by an app: pin the app " +
-                "(Settings → Security → App pinning) to block home and recents."
+                "screen uses the space. Android's back gesture shows the bar instead of closing the screen."
         }, ui.lp(top = 4))
     }
 

@@ -14,6 +14,8 @@ data class DisplayPrefs(
     /** Touches starting in the border or near an edge start on the guest's edge. */
     val snap: Boolean = true,
     val bar: BarMode = BarMode.AUTO_HIDE,
+    /** Pin the display (Android app pinning) while it is open: no home, recents or notification shade. */
+    val pin: Boolean = true,
 ) {
     enum class BarMode(val label: String) {
         ALWAYS("Always"),
@@ -27,6 +29,7 @@ data class DisplayPrefs(
             .putInt("border_dp", borderDp)
             .putBoolean("snap", snap)
             .putString("bar", bar.name)
+            .putBoolean("pin", pin)
             .apply()
     }
 
@@ -47,6 +50,7 @@ data class DisplayPrefs(
                 borderDp = p.getInt("border_dp", d.borderDp).let { if (it == AUTO) AUTO else it.coerceIn(0, MAX_DP) },
                 snap = p.getBoolean("snap", d.snap),
                 bar = p.getString("bar", null)?.let { n -> BarMode.entries.firstOrNull { it.name == n } } ?: d.bar,
+                pin = p.getBoolean("pin", d.pin),
             )
         }
     }
