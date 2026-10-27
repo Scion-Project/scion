@@ -170,6 +170,78 @@ def native_lib_dir(serial):
     return f"{legacy.group(1)}/{ABI_LIB_DIR[abi.group(1)]}"
 
 
+def screenshot(serial, path):
+    shot = subprocess.run(["adb"] + (["-s", serial] if serial else []) + ["exec-out", "screencap", "-p"],
+                          capture_output=True)
+    path.write_bytes(shot.stdout)
+
+
+def tap_text(serial, text):
+    """Taps the first node whose text is exactly `text` (uiautomator dump); False if it isn't on screen."""
+    adb(serial, "shell", "uiautomator", "dump", "/sdcard/window_dump.xml", check=False)
+    xml = adb(serial, "shell", "cat", "/sdcard/window_dump.xml", check=False).stdout
+    # The last match: section headers come after same-named buttons higher up the page.
+    found = re.findall(r'text="' + re.escape(text) + r'"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', xml)
+    if not found:
+        return False
+    x1, y1, x2, y2 = map(int, found[-1])
+    adb(serial, "shell", "input", "tap", str((x1 + x2) // 2), str((y1 + y2) // 2), check=False)
+    time.sleep(1)
+    return True
+
+
+def screen_size(serial):
+    m = re.search(r"(\d+)x(\d+)\s*$", adb(serial, "shell", "wm", "size", check=False).stdout.strip())
+    return tuple(map(int, m.groups())) if m else (320, 640)
+
+
+def swipe(serial, up=True):
+    """Scrolls the page by about half a screen (up=True moves further down the page)."""
+    w, h = screen_size(serial)
+    a, b = (h * 3 // 4, h // 4) if up else (h // 4, h * 3 // 4)
+    adb(serial, "shell", "input", "swipe", str(w // 2), str(a), str(w // 2), str(b), "400", check=False)
+
+
+def scroll_shots(serial, out, prefix, pages=4):
+    """Screenshots down the page: <prefix>-1.png, ... (stops early once the page no longer moves)."""
+    last = b""
+    for i in range(1, pages + 1):
+        if i > 1 or not prefix.endswith("expanded"):
+            swipe(serial)
+            time.sleep(1.5)
+        path = out / f"{prefix}-{i}.png"
+        screenshot(serial, path)
+        data = path.read_bytes()
+        if data == last:
+            path.unlink()
+            break
+        last = data
+
+
+def ui_tour(serial, out):
+    """Evidence for UI review: the page scrolled, the collapsed sections opened, and a Pixel-sized screen."""
+    scroll_shots(serial, out, "screen-scrolled", pages=2)
+    for title in ("VM files", "Settings", "Display", "Diagnostics"):
+        for _ in range(4):
+            if tap_text(serial, title):
+                break
+            swipe(serial)
+            time.sleep(1)
+    for _ in range(12):
+        swipe(serial, up=False)
+    time.sleep(1)
+    scroll_shots(serial, out, "screen-expanded", pages=8)
+    # A Pixel 10-sized screen (1080 px at 420 dpi = 411 dp wide), from the top.
+    adb(serial, "shell", "wm", "size", "1080x2424", check=False)
+    adb(serial, "shell", "wm", "density", "420", check=False)
+    adb(serial, "shell", "am", "force-stop", PKG, check=False)
+    adb(serial, "shell", "am", "start", "-W", "-n", f"{PKG}/.MainActivity", check=False)
+    time.sleep(4)
+    screenshot(serial, out / "screen-411dp.png")
+    adb(serial, "shell", "wm", "size", "reset", check=False)
+    adb(serial, "shell", "wm", "density", "reset", check=False)
+
+
 def cmd_app_smoke(a):
     """Install the APK, launch MainActivity, check the main screen and the bundled QEMU."""
     out = Path(a.out)
@@ -216,9 +288,11 @@ def cmd_app_smoke(a):
         print(f"WARN: `-M help` exited with status {machines.returncode} after listing machines "
               "(known exit abort, #61); see qemu-machines.txt")
 
-    shot = subprocess.run(["adb"] + (["-s", a.serial] if a.serial else []) + ["exec-out", "screencap", "-p"],
-                          capture_output=True)
-    (out / "screen.png").write_bytes(shot.stdout)
+    screenshot(a.serial, out / "screen.png")
+    try:
+        ui_tour(a.serial, out)
+    except Exception as e:  # evidence only; never fails the smoke test
+        print(f"WARN: UI tour screenshots incomplete: {e}")
     logcat = adb(a.serial, "logcat", "-d", check=False).stdout
     (out / "logcat.txt").write_text(logcat)
     check(not re.search(rf"FATAL EXCEPTION.*\n.*Process: {re.escape(PKG)}", logcat), "no crash in logcat")
