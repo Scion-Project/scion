@@ -262,8 +262,9 @@ class MainActivity : Activity() {
 
     /** The install list: pick one, add, rename, remove. Only one VM runs at a time. */
     private fun buildInstallsCard(root: LinearLayout) {
-        val card = ui.card(root, "Installs", "Each install has its own VM folder, engine and settings.")
-        installGroup = RadioGroup(this).also { card.addView(it, ui.lp(top = 8)) }
+        // (The Add dialog explains what an install is; the list itself shows engine and storage.)
+        val card = ui.card(root, "Installs")
+        installGroup = RadioGroup(this).also { card.addView(it, ui.lp(top = 4)) }
         installGroup.setOnCheckedChangeListener { _, checked ->
             if (filling) return@setOnCheckedChangeListener
             val id = installIds[checked] ?: return@setOnCheckedChangeListener
@@ -888,10 +889,11 @@ class MainActivity : Activity() {
                 text = head
             }, ui.lp(width = 0, weight = 1f))
         })
-        if (code != null) item.addView(ui.text(11.5f, if (c.ok) Ui.MUTED else Ui.TEXT, mono = true, selectable = true).apply {
+        // 10.5 sp monospace fits a 32-character path component on a 320 dp screen.
+        if (code != null) item.addView(ui.text(10.5f, if (c.ok) Ui.MUTED else Ui.TEXT, mono = true, selectable = true).apply {
             text = code
             background = ui.roundRect(Ui.FIELD, 8)
-            setPadding(ui.dp(8), ui.dp(6), ui.dp(8), ui.dp(6))
+            setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6))
             setLineSpacing(0f, 1.05f)
         }, ui.lp(top = 4, start = 22))
         return item

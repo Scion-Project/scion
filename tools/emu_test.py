@@ -270,8 +270,22 @@ def cmd_app_smoke(a):
     # Since #69 the status word and each check's tick are separate views: the tick
     # node comes right before its label node in the dump.
     check('text="Stopped"' in xml, "main screen renders status 'Stopped'")
-    check(re.search(r'text="✓"[^>]*>\s*<node[^>]*text="QEMU binary bundled"', xml) is not None,
-          "checks list shows '✓ QEMU binary bundled'")
+    # The dump holds only what's on screen; on a small screen the checks list is further down.
+    qemu_check = r'text="✓"[^>]*>\s*<node[^>]*text="QEMU binary bundled"'
+    found = re.search(qemu_check, xml) is not None
+    for _ in range(4):
+        if found:
+            break
+        swipe(a.serial)
+        time.sleep(1.5)
+        adb(a.serial, "shell", "uiautomator", "dump", "/sdcard/window_dump.xml", check=False)
+        more = adb(a.serial, "shell", "cat", "/sdcard/window_dump.xml", check=False).stdout
+        (out / "window_dump-scrolled.xml").write_text(more)
+        found = re.search(qemu_check, more) is not None
+    check(found, "checks list shows '✓ QEMU binary bundled'")
+    for _ in range(6):
+        swipe(a.serial, up=False)
+    time.sleep(1)
     check(bool(adb(a.serial, "shell", "pidof", PKG, check=False).stdout.strip()), "app process is alive")
 
     # Exec QEMU the way the app does: as the app's uid, from nativeLibraryDir (run-as needs a debug APK).
