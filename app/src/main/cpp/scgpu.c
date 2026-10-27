@@ -75,6 +75,7 @@ enum {
 #define F_VIRGL                 0
 #define F_CONTEXT_INIT          4
 #define CAPSET_GFXSTREAM_GLES   8
+#define PIPE_TEXTURE_2D         2       /* struct resource_create_3d's target (gallium's) */
 
 struct hdr { uint32_t type, flags; uint64_t fence_id; uint32_t ctx_id; uint8_t ring_idx, padding[3]; };
 struct box { uint32_t x, y, z, w, h, d; };
@@ -168,6 +169,35 @@ at(uint64_t pa, uint64_t n)
 	return S.base + (pa - S.guest);
 }
 
+/*
+ * gfxstream keeps a linear copy of every resource, the size of its backing, and copies through it;
+ * without a backing that copy is empty and every transfer fails ("mLinear is too small"). SCGPU's
+ * colour buffers have no backing in the guest (their transfers bring their own iovecs), so each gets
+ * placeholder iovecs of its picture's size, over the pool: never read or written through, only there
+ * to size the copy.
+ */
+static int
+attach_placeholder(uint32_t res, uint64_t bytes)
+{
+	uint8_t *pool = S.base + SCGPU_POOL_OFF;
+	uint64_t pool_len = S.size - SCGPU_POOL_OFF;
+	uint32_t n = (uint32_t)((bytes + pool_len - 1) / pool_len);
+	struct iovec *iov = calloc(n ? n : 1, sizeof(*iov));
+	int err;
+
+	if (iov == NULL) {
+		return -ENOMEM;
+	}
+	for (uint32_t i = 0; i < n; i++) {
+		uint64_t left = bytes - (uint64_t)i * pool_len;
+		iov[i].iov_base = pool;
+		iov[i].iov_len = (size_t)(left < pool_len ? left : pool_len);
+	}
+	err = sr.attach_iov((int)res, iov, (int)n);
+	free(iov);
+	return err;
+}
+
 static void
 fence_cb(void *user, struct sr_fence *f)
 {
@@ -242,6 +272,10 @@ handle(uint32_t len)
 		a = (struct sr_create){ c.resource_id, c.target, c.format, c.bind, c.width, c.height, c.depth,
 			c.array_size, c.last_level, c.nr_samples, c.flags };
 		err = sr.resource_create(&a, NULL, 0);
+		if (!err && c.target == PIPE_TEXTURE_2D) {
+			/* a colour buffer: 4 bytes a pixel (BGRA/RGBA, all the guest makes) */
+			err = attach_placeholder(c.resource_id, (uint64_t)c.width * (c.height ? c.height : 1) * 4);
+		}
 		break;
 	}
 	case CMD_RESOURCE_ATTACH_BACKING: {
@@ -249,7 +283,7 @@ handle(uint32_t len)
 		NEED(c);
 		memcpy(&c, cmd, sizeof(c));
 		if (c.nr_entries == 0) {
-			break;                  /* SCGPU's colour buffers: transfers bring their own memory */
+			break;                  /* SCGPU's colour buffers: placeholders already (attach_placeholder) */
 		}
 		if (c.nr_entries > (len - sizeof(c)) / sizeof(struct mem_entry)) {
 			err = -EINVAL;
@@ -516,8 +550,14 @@ Java_io_github_dylanneve1_iosonpixel_avf_ScgpuNative_setWindow(JNIEnv *env, jcla
 	}
 	pthread_mutex_lock(&S.window_lock);
 	ANativeWindow *old = S.window, *win = surface ? ANativeWindow_fromSurface(env, surface) : NULL;
-	/* the subwindow lets go of the old window before it is released (android-host.patch) */
-	sr.setup_window(win, 0, 0, w, h, S.fb_w, S.fb_h);
+	/*
+	 * The subwindow lets go of the old window before it is released (android-host.patch). Its last two
+	 * numbers are the size the guest's frame is drawn at inside the window (the emulator's zoom), not
+	 * the frame's own: the whole window. (With the guest's 1125x2436 in a 1080x2338 window the picture
+	 * overflowed it, and the top -- the status bar -- and the right edge were cut off.) The SurfaceView
+	 * has the guest's aspect ratio already (SurfaceScreen).
+	 */
+	sr.setup_window(win, 0, 0, w, h, w, h);
 	S.window = win;
 	if (old != NULL) {
 		ANativeWindow_release(old);
