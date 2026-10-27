@@ -20,8 +20,10 @@
 #include <jni.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/system_properties.h>
 #include <sys/uio.h>
 #include <sys/socket.h>
 #include <time.h>
@@ -166,6 +168,101 @@ static struct {
 } S = { .window_lock = PTHREAD_MUTEX_INITIALIZER, .bell = -1 };
 
 #define SPIN_NS                 200000u         /* after a command, look for the next this long, then sleep */
+
+/*
+ * Which GL calls the guest waits on (a diagnostic, `adb shell setprop debug.scion.scgpu.ops 1` before
+ * the VM starts): the stream's commands are [opcode u32][size u32][args], so per pipe the opcode of
+ * the last command written is known when the guest reads its reply. Every 5 s the calls most waited
+ * on and most made are logged by opcode (gfxstream's *_opcodes.h name them: GLESv1 1024+, GLESv2
+ * 2048+, renderControl 10000+).
+ */
+#define OPS_MAX                 16384u
+#define OPS_PIPES               32u
+
+static struct {
+	int on;
+	struct ops_pipe { uint32_t res, skip, last_op, hdr_n, lost, waited; uint8_t hdr[8]; } pipe[OPS_PIPES];
+	uint32_t calls[OPS_MAX], waits[OPS_MAX];
+	uint64_t waits_unknown;
+} O;
+
+static int
+op_known(uint32_t op)
+{
+	return (op >= 1024 && op < 1400) || (op >= 2048 && op < 2600) || (op >= 10000 && op < 10200);
+}
+
+static struct ops_pipe *
+ops_pipe(uint32_t res, int make)
+{
+	for (uint32_t i = 0; i < OPS_PIPES; i++) {
+		if (O.pipe[i].res == res) {
+			return &O.pipe[i];
+		}
+	}
+	if (!make) {
+		return NULL;
+	}
+	struct ops_pipe *p = &O.pipe[res % OPS_PIPES];     /* (a pipe it pushes out starts over: lost) */
+	memset(p, 0, sizeof(*p));
+	p->res = res;
+	return p;
+}
+
+/* n more bytes of a pipe's stream. A record that comes while the parse is lost starts it over. */
+static void
+ops_parse(struct ops_pipe *p, const uint8_t *b, uint32_t n)
+{
+	while (n > 0 && !p->lost) {
+		if (p->skip > 0) {
+			uint32_t k = n < p->skip ? n : p->skip;
+			p->skip -= k, b += k, n -= k;
+			continue;
+		}
+		uint32_t k = 8 - p->hdr_n < n ? 8 - p->hdr_n : n;
+		memcpy(p->hdr + p->hdr_n, b, k);
+		p->hdr_n += k, b += k, n -= k;
+		if (p->hdr_n < 8) {
+			break;
+		}
+		uint32_t op, size;
+		memcpy(&op, p->hdr, 4);
+		memcpy(&size, p->hdr + 4, 4);
+		p->hdr_n = 0;
+		if (!op_known(op) || size < 8 || size > (64u << 20)) {
+			p->lost = 1;
+			break;
+		}
+		p->last_op = op;
+		p->waited = 0;
+		p->skip = size - 8;
+		O.calls[op]++;
+	}
+}
+
+/* The top 8 of counts by opcode into a line: "op×n op×n ...". */
+static void
+ops_top(const uint32_t *counts, char *out, size_t len)
+{
+	uint32_t top[8] = { 0 }, n = 0;
+	size_t at = 0;
+
+	for (uint32_t op = 0; op < OPS_MAX; op++) {
+		if (counts[op] == 0 || (n == 8 && counts[op] <= counts[top[7]])) {
+			continue;
+		}
+		uint32_t i = n < 8 ? n++ : 7;
+		top[i] = op;
+		for (; i > 0 && counts[top[i]] > counts[top[i - 1]]; i--) {
+			uint32_t t = top[i];
+			top[i] = top[i - 1], top[i - 1] = t;
+		}
+	}
+	out[0] = 0;
+	for (uint32_t i = 0; i < n && at < len; i++) {
+		at += (size_t)snprintf(out + at, len - at, "%s%u×%u", i ? " " : "", top[i], counts[top[i]]);
+	}
+}
 
 static uint64_t
 now_ns(void)
@@ -362,6 +459,15 @@ handle(uint32_t len)
 		if (in.type == CMD_TRANSFER_TO_HOST_3D) {
 			err = sr.write(c.resource_id, in.ctx_id, (int)c.level, c.stride, c.layer_stride, &c.box, c.offset, NULL, 0);
 		} else {
+			if (O.on) {
+				struct ops_pipe *p = ops_pipe(c.resource_id, 0);
+				if (p != NULL && !p->lost && p->last_op != 0) {
+					O.waits[p->last_op] += !p->waited;      /* (once a call, however many reads its reply takes) */
+					p->waited = 1;
+				} else {
+					O.waits_unknown++;
+				}
+			}
 			err = sr.read(c.resource_id, in.ctx_id, c.level, c.stride, c.layer_stride, &c.box, c.offset, NULL, 0);
 		}
 		break;
@@ -453,6 +559,14 @@ drain(void)
 		uint32_t at = (pos + (uint32_t)sizeof(r)) & (size - 1);
 		uint32_t first = r.len < size - at ? r.len : size - at;
 		struct iovec iov[2] = { { ring + at, first }, { ring, r.len - first } };
+		if (O.on) {
+			struct ops_pipe *p = ops_pipe(r.resource_id, 1);
+			if (p->lost) {
+				p->lost = p->skip = p->hdr_n = 0;
+			}
+			ops_parse(p, ring + at, first);
+			ops_parse(p, ring, r.len - first);
+		}
 		struct box b = { 0, 0, 0, r.len, 1, 1 };
 		int err = sr.write(r.resource_id, r.ctx_id, 0, 0, 0, &b, 0, iov, r.len > first ? 2 : 1);
 		if (err) {
@@ -505,6 +619,16 @@ report(uint64_t now)
 		    "rung %.0f/s, rang %.0f/s%s", (S.commands - commands) / secs, (S.records - records) / secs,
 		    (S.record_bytes - record_bytes) / 1e6 / secs, (S.busy_ns - busy) / 1e7 / secs, (S.sleeps - sleeps) / secs,
 		    (S.rings_in - rings_in) / secs, (S.rings_out - rings_out) / secs, S.bell < 0 ? " (polling)" : "");
+	}
+	if (O.on) {
+		char waits[256], calls[256];
+		ops_top(O.waits, waits, sizeof(waits));
+		ops_top(O.calls, calls, sizeof(calls));
+		LOG("SCGPU ops (%.0f s): waited on %s; unknown %llu | made %s", secs, waits,
+		    (unsigned long long)O.waits_unknown, calls);
+		memset(O.waits, 0, sizeof(O.waits));
+		memset(O.calls, 0, sizeof(O.calls));
+		O.waits_unknown = 0;
 	}
 	at = now;
 	commands = S.commands;
@@ -659,6 +783,9 @@ Java_io_github_dylanneve1_iosonpixel_avf_ScgpuNative_start(JNIEnv *env, jclass c
 	S.commands = S.errors = S.busy_ns = 0;
 	S.rings_in = S.rings_out = S.sleeps = 0;
 	S.records = S.record_bytes = 0;
+	char prop[PROP_VALUE_MAX] = "";
+	memset(&O, 0, sizeof(O));
+	O.on = __system_property_get("debug.scion.scgpu.ops", prop) > 0 && prop[0] == '1';
 	S.bell = bell_fd >= 0 ? dup(bell_fd) : -1;       /* (ours: the app closes its own) */
 	S.stop = 0;
 	if (pthread_create(&S.thread, NULL, serve, NULL) != 0) {
