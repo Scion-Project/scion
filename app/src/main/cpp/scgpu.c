@@ -8,7 +8,10 @@
  * into the guest and out again through SCFB (17-40 ms a frame of readback on this phone).
  *
  * The region and its protocol: hackios-xnu-kernel xnu/files/bsd/sys/hakios.scgpu.h (copied below).
- * One command at a time; this thread polls for it (a spin while commands come, then naps).
+ * One command at a time. This thread spins a little after each, then sleeps on the doorbell: a
+ * virtio-input device of the app's ("scion-scgpu") whose socket crosvm writes the guest's status
+ * events into; it rings the guest back the same way (an event into the socket: an interrupt there),
+ * each side only when the other has said it sleeps. Without the doorbell it polls.
  */
 #include <android/log.h>
 #include <android/native_window_jni.h>
@@ -20,7 +23,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/uio.h>
+#include <sys/socket.h>
 #include <time.h>
+#include <unistd.h>
 
 #define TAG "scgpu"
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -49,7 +54,8 @@ struct scgpu_header {
 	int32_t status;
 	uint64_t commands, presents, host_busy_ns;
 	uint32_t guest_flags;
-	uint32_t reserved[15];
+	uint32_t host_sleeping, guest_waiting;
+	uint32_t reserved[13];
 };
 
 struct scgpu_transfer {
@@ -149,7 +155,11 @@ static struct {
 	ANativeWindow *window;
 	uint64_t commands, errors, busy_ns;
 	uint32_t said_unknown;
-} S = { .window_lock = PTHREAD_MUTEX_INITIALIZER };
+	int bell;                       /* the doorbell's socket, or -1: polling */
+	uint64_t rings_in, rings_out, sleeps;
+} S = { .window_lock = PTHREAD_MUTEX_INITIALIZER, .bell = -1 };
+
+#define SPIN_NS                 200000u         /* after a command, look for the next this long, then sleep */
 
 static uint64_t
 now_ns(void)
@@ -407,24 +417,72 @@ reply:
 	return resp_len;
 }
 
+/* One line every 5 s while commands come: how busy the device is, and how much it slept. */
+static void
+report(uint64_t now)
+{
+	static uint64_t at, commands, busy, rings_in, rings_out, sleeps;
+
+	if (at == 0) {
+		at = now;
+	}
+	if (now - at < 5000000000u) {
+		return;
+	}
+	double secs = (now - at) / 1e9;
+	if (S.commands != commands) {
+		LOG("SCGPU: %.0f commands/s, %.1f%% of the time in them; %.0f sleeps/s, rung %.0f/s, rang %.0f/s%s",
+		    (S.commands - commands) / secs, (S.busy_ns - busy) / 1e7 / secs, (S.sleeps - sleeps) / secs,
+		    (S.rings_in - rings_in) / secs, (S.rings_out - rings_out) / secs, S.bell < 0 ? " (polling)" : "");
+	}
+	at = now;
+	commands = S.commands;
+	busy = S.busy_ns;
+	rings_in = S.rings_in;
+	rings_out = S.rings_out;
+	sleeps = S.sleeps;
+}
+
 static void *
 serve(void *arg)
 {
 	(void)arg;
-	uint32_t seen = __atomic_load_n((uint32_t *)(uintptr_t)&S.h->req_seq, __ATOMIC_ACQUIRE);
+	volatile uint32_t *req = (volatile uint32_t *)&S.h->req_seq;
+	uint32_t seen = __atomic_load_n((uint32_t *)(uintptr_t)req, __ATOMIC_ACQUIRE);
 	uint64_t last = now_ns();
 
 	while (!S.stop) {
-		uint32_t seq = __atomic_load_n((uint32_t *)(uintptr_t)&S.h->req_seq, __ATOMIC_ACQUIRE);
+		uint32_t seq = __atomic_load_n((uint32_t *)(uintptr_t)req, __ATOMIC_ACQUIRE);
 		if (seq == seen) {
-			/* nothing: a spin while the guest is busy, then naps that grow */
 			uint64_t idle = now_ns() - last;
-			if (idle < 2000000u) {
+			if (idle < SPIN_NS) {
 				__asm__ volatile("yield");
-			} else {
-				struct timespec nap = { 0, idle < 200000000u ? 50000 : 1000000 };
-				nanosleep(&nap, NULL);
+				continue;
 			}
+			if (S.bell >= 0) {
+				/* asleep until the guest rings: say so, then look once more (its half is in scgpu_ctrl) */
+				__atomic_store_n((uint32_t *)(uintptr_t)&S.h->host_sleeping, 1, __ATOMIC_RELAXED);
+				__atomic_thread_fence(__ATOMIC_SEQ_CST);
+				if (__atomic_load_n((uint32_t *)(uintptr_t)req, __ATOMIC_ACQUIRE) == seen) {
+					char buf[256];
+					ssize_t n = read(S.bell, buf, sizeof(buf));
+					S.sleeps++;
+					if (n > 0) {
+						S.rings_in += (uint64_t)n / 8;
+					} else if (n == 0 || errno != EINTR) {
+						if (!S.stop) {
+							ERR("the doorbell's socket: %s; polling from now on", n == 0 ? "closed" : strerror(errno));
+						}
+						S.bell = -1;
+					}
+				}
+				__atomic_store_n((uint32_t *)(uintptr_t)&S.h->host_sleeping, 0, __ATOMIC_RELAXED);
+				report(now_ns());
+				continue;
+			}
+			struct timespec nap = { 0, idle < 200000000u ? 50000 : 1000000 };
+			nanosleep(&nap, NULL);
+			report(now_ns());
 			continue;
 		}
 		seen = seq;
@@ -438,6 +496,15 @@ serve(void *arg)
 		S.h->commands = S.commands;
 		S.h->host_busy_ns = S.busy_ns;
 		__atomic_store_n((uint32_t *)(uintptr_t)&S.h->resp_seq, seq, __ATOMIC_RELEASE);
+		/* the guest asleep on the doorbell is rung: an input event, an interrupt there */
+		__atomic_thread_fence(__ATOMIC_SEQ_CST);
+		if (S.bell >= 0 && __atomic_load_n((uint32_t *)(uintptr_t)&S.h->guest_waiting, __ATOMIC_RELAXED)) {
+			static const uint16_t syn[4] = { 0, 0, 0, 0 };      /* EV_SYN SYN_REPORT */
+			if (write(S.bell, syn, sizeof(syn)) == (ssize_t)sizeof(syn)) {
+				S.rings_out++;
+			}
+		}
+		report(last);
 	}
 	return NULL;
 }
@@ -477,7 +544,7 @@ load(void)
  */
 JNIEXPORT jint JNICALL
 Java_io_github_dylanneve1_iosonpixel_avf_ScgpuNative_start(JNIEnv *env, jclass cls, jobject region, jlong guest,
-    jint fb_w, jint fb_h)
+    jint fb_w, jint fb_h, jint bell_fd)
 {
 	(void)cls;
 	if (S.running) {
@@ -517,6 +584,8 @@ Java_io_github_dylanneve1_iosonpixel_avf_ScgpuNative_start(JNIEnv *env, jclass c
 	S.h->features_lo = (1u << F_VIRGL) | (1u << F_CONTEXT_INIT);
 	S.h->num_capsets = 1;
 	S.commands = S.errors = S.busy_ns = 0;
+	S.rings_in = S.rings_out = S.sleeps = 0;
+	S.bell = bell_fd >= 0 ? dup(bell_fd) : -1;       /* (ours: the app closes its own) */
 	S.stop = 0;
 	if (pthread_create(&S.thread, NULL, serve, NULL) != 0) {
 		return -5;
@@ -524,8 +593,8 @@ Java_io_github_dylanneve1_iosonpixel_avf_ScgpuNative_start(JNIEnv *env, jclass c
 	pthread_setname_np(S.thread, "scgpu");
 	__atomic_store_n((uint32_t *)(uintptr_t)&S.h->flags, SCGPU_F_HOST_READY, __ATOMIC_RELEASE);
 	S.running = 1;
-	LOG("SCGPU: gfxstream up, %llu MiB region at guest %#llx, display %dx%d", (unsigned long long)(S.size >> 20),
-	    (unsigned long long)S.guest, fb_w, fb_h);
+	LOG("SCGPU: gfxstream up, %llu MiB region at guest %#llx, display %dx%d, %s", (unsigned long long)(S.size >> 20),
+	    (unsigned long long)S.guest, fb_w, fb_h, S.bell >= 0 ? "doorbell" : "polling");
 	return 0;
 }
 
@@ -574,7 +643,14 @@ Java_io_github_dylanneve1_iosonpixel_avf_ScgpuNative_stop(JNIEnv *env, jclass cl
 	}
 	Java_io_github_dylanneve1_iosonpixel_avf_ScgpuNative_setWindow(env, cls, NULL, 0, 0);
 	S.stop = 1;
+	if (S.bell >= 0) {
+		shutdown(S.bell, SHUT_RDWR);    /* (the thread may be asleep in read on it) */
+	}
 	pthread_join(S.thread, NULL);
+	if (S.bell >= 0) {
+		close(S.bell);
+		S.bell = -1;
+	}
 	S.running = 0;
 	/* the renderer stays up for the next run in this process: gfxstream is set up once */
 	LOG("SCGPU: stopped after %llu commands (%llu failed), %.1f s busy", (unsigned long long)S.commands,

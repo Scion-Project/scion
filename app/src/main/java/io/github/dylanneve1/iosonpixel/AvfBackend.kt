@@ -97,6 +97,7 @@ class AvfBackend(
         append(" cpus=").append(if (s.matchHostCpus) "host" else "1")
         s.gpu?.let { append(" gpu=").append(it.backend).append(":").append(it.contextTypes.joinToString(",")) }
         if (s.network) append(" net=tap")
+        if (s.audio) append(" audio")
         append(" params=\"").append(s.params.joinToString(" ")).append('"')
     }
 
@@ -259,6 +260,9 @@ class AvfLayout(val dir: File) {
      */
     val scgpu: Boolean get() = prop("gpu") == SCGPU
 
+    /** audio=1: a virtio-snd device for the guest's sound (AvfApi.Spec.audio), played by crosvm through AAudio. */
+    val audio: Boolean get() = prop("audio").let { it == "1" || it == "on" }
+
     data class Disk(val file: File, val writable: Boolean)
 
     val disks: List<Disk>
@@ -311,6 +315,7 @@ class AvfLayout(val dir: File) {
         matchHostCpus = cpus?.let { it == "host" } ?: (s.smp > 1),
         gpu = gpu,
         network = s.avfNetwork,
+        audio = audio,
     )
 
     companion object {
@@ -378,7 +383,7 @@ class AvfVm private constructor(
     private fun boot(ctx: Context, spec: AvfApi.Spec): Boolean {
         log("avf: $state")
         try {
-            val config = api.buildConfig(ctx, spec) { io.configure(it, spec.memoryBytes, log) }
+            val config = api.buildConfig(ctx, spec, log) { io.configure(it, spec.memoryBytes, log) }
             val v = api.create(manager, spec.name, config).also { vm = it }
             v.setCallback(callbacks, object : AvfApi.Listener {
                 override fun onStopped(reason: Int) {

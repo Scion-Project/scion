@@ -95,6 +95,12 @@ class AvfApi private constructor(
          * serves (DHCP, DNS, NAT): the same network the Terminal app's VM gets.
          */
         val network: Boolean = false,
+        /**
+         * A virtio-snd device that crosvm plays through Android's audio (AAudio): the AudioConfig the
+         * Terminal app's VM gets, speaker only. Optional: without AudioConfig on this Android, or if it
+         * is refused, the VM boots without sound (and the log says why).
+         */
+        val audio: Boolean = false,
     )
 
     /**
@@ -135,7 +141,7 @@ class AvfApi private constructor(
      * A VirtualMachineConfig for a non-protected VM booting [spec]'s kernel, with console and
      * log output captured (that needs DEBUG_LEVEL_FULL). [configure] may add devices.
      */
-    fun buildConfig(ctx: Context, spec: Spec, configure: (ImageBuilder) -> Unit = {}): Any {
+    fun buildConfig(ctx: Context, spec: Spec, log: (String) -> Unit = {}, configure: (ImageBuilder) -> Unit = {}): Any {
         if (spec.disks.isNotEmpty() && !disksSupported) {
             throw AvfException("disk images need VirtualMachineCustomImageConfig.Disk, which the hidden-API policy blocks")
         }
@@ -154,6 +160,9 @@ class AvfApi private constructor(
         }
         configure(ImageBuilder(img))
         spec.gpu?.let { setGpu(img, it) }
+        if (spec.audio) {
+            setAudio(img)?.let { log("avf: audio: none for this run: $it") } ?: log("avf: audio: virtio-snd, speaker")
+        }
         val image = call("ImageBuilder.build", img)
 
         val c = invokeCtor("ConfigBuilder.<init>", ctor("ConfigBuilder"), ctx)
@@ -188,6 +197,24 @@ class AvfApi private constructor(
         } catch (t: Throwable) {
             throw wrap("GpuConfig", t)
         }
+    }
+
+    /** AudioConfig.Builder by reflection, the speaker only; null, or why it couldn't be had. */
+    private fun setAudio(img: Any): String? = try {
+        val cls = Class.forName("$PKG.VirtualMachineCustomImageConfig\$AudioConfig\$Builder")
+        var b: Any = cls.getConstructor().newInstance()
+        fun set(name: String, arg: Any) {
+            val m = b.javaClass.methods.first { it.name == name && it.parameterTypes.size == 1 }
+            b = m.invoke(b, arg) ?: b
+        }
+        set("setUseSpeaker", true)
+        set("setUseMicrophone", false)
+        val config = b.javaClass.getMethod("build").invoke(b)
+        img.javaClass.methods.first { it.name == "setAudioConfig" && it.parameterTypes.size == 1 }.invoke(img, config)
+        null
+    } catch (t: Throwable) {
+        val c = if (t is java.lang.reflect.InvocationTargetException) t.targetException ?: t else t
+        "${c.javaClass.simpleName}: ${c.message}"
     }
 
     // ---- VirtualMachine -------------------------------------------------------
