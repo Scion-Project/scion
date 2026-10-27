@@ -16,11 +16,35 @@ import android.widget.TextView
  * ([SurfaceDisplay], QEMU in-process): a SurfaceView kept at the guest
  * framebuffer's aspect ratio, centred on black, with touches passed straight
  * to the VM. Scaling is left to the compositor.
+ *
+ * A display that shows the guest's frames through a renderer of its own (AVF
+ * SCGPU) gets a second SurfaceView, over the first and the same size, once it
+ * says it wants one ([SurfaceDisplay.overlayWanted], asked every
+ * [OVERLAY_POLL_MS]); until then the overlay is gone and the first Surface has
+ * the picture.
  */
 @SuppressLint("ViewConstructor")
 class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
     FrameLayout(context), SurfaceHolder.Callback {
     private val surfaceView = SurfaceView(context)
+    private val overlay = SurfaceView(context).apply {
+        setZOrderMediaOverlay(true)
+        visibility = View.GONE
+    }
+    private val overlayCallback = object : SurfaceHolder.Callback {
+        override fun surfaceCreated(holder: SurfaceHolder) = Unit
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) =
+            display.setOverlaySurface(holder.surface, width, height)
+        override fun surfaceDestroyed(holder: SurfaceHolder) = display.setOverlaySurface(null, 0, 0)
+    }
+    private val overlayPoll = object : Runnable {
+        override fun run() {
+            val want = display.overlayWanted()
+            val visible = overlay.visibility == View.VISIBLE
+            if (want != visible) overlay.visibility = if (want) View.VISIBLE else View.GONE
+            postDelayed(this, OVERLAY_POLL_MS)
+        }
+    }
     private val label = TextView(context).apply {
         setTextColor(Color.LTGRAY)
         textSize = 14f
@@ -45,9 +69,21 @@ class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
     init {
         setBackgroundColor(Color.BLACK)
         addView(surfaceView)
+        addView(overlay)
         addView(label)
         placeholder = "Waiting for the VM display…"
         surfaceView.holder.addCallback(this)
+        overlay.holder.addCallback(overlayCallback)
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        post(overlayPoll)
+    }
+
+    override fun onDetachedFromWindow() {
+        removeCallbacks(overlayPoll)
+        super.onDetachedFromWindow()
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -59,6 +95,7 @@ class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
         val cw = maxOf(b.width, 1)
         val ch = maxOf(b.height, 1)
         surfaceView.measure(MeasureSpec.makeMeasureSpec(cw, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(ch, MeasureSpec.EXACTLY))
+        overlay.measure(MeasureSpec.makeMeasureSpec(cw, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(ch, MeasureSpec.EXACTLY))
         label.measure(MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY))
     }
 
@@ -66,6 +103,7 @@ class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
         val left = (r - l - surfaceView.measuredWidth) / 2
         val top = (b - t - surfaceView.measuredHeight) / 2
         surfaceView.layout(left, top, left + surfaceView.measuredWidth, top + surfaceView.measuredHeight)
+        overlay.layout(left, top, left + surfaceView.measuredWidth, top + surfaceView.measuredHeight)
         label.layout(0, 0, r - l, b - t)
         guest.set(left, top, left + surfaceView.measuredWidth, top + surfaceView.measuredHeight)
         edge.excludeSideEdges(guest)
@@ -113,5 +151,9 @@ class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
         val y = e.y.toInt().coerceIn(0, h - 1)
         display.touch(x, y, w, h, down)
         return true
+    }
+
+    private companion object {
+        const val OVERLAY_POLL_MS = 100L
     }
 }

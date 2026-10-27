@@ -31,6 +31,10 @@ import java.nio.ByteOrder
  *  - Camera, with the per-install Camera setting ([camera]): a second shared region ([Sccam]) right
  *    below the framebuffer's, added the same way, that [SccamCamera] writes the phone's camera
  *    frames into. If it can't be set up, the display goes on without it.
+ *  - GPU, with `gpu=scgpu` in avf.properties ([gpu]): a third region ([Scgpu]) below those, for the
+ *    renderer this app runs itself (gfxstream, scgpu.c); the guest's frames are shown in an overlay
+ *    over the framebuffer's Surface once the guest presents through it. If it can't be set up, the
+ *    guest finds no GPU and draws in software.
  *
  * The Java API never fills those two raw-config fields, so for the one `createVm` call of this
  * run the app wraps the `IVirtualizationService` binder the framework uses (in this process, on
@@ -43,6 +47,7 @@ class ScfbIo(
     private val height: Int,
     private val notice: (String) -> Unit,
     private val camera: CameraSpec? = null,
+    private val gpu: Boolean = false,
 ) : AvfIo {
     /**
      * The camera, when the install's Camera setting is on: which cameras the phone has (bit 0 back,
@@ -69,6 +74,10 @@ class ScfbIo(
     private var camFd: ParcelFileDescriptor? = null
     private var camMap: ByteBuffer? = null
     private var camRunner: AutoCloseable? = null
+    private var gpuRegion: Scgpu.Region? = null
+    private var gpuShm: SharedMemory? = null
+    private var gpuFd: ParcelFileDescriptor? = null
+    private var gpuMap: ByteBuffer? = null
 
     private fun fail(reason: String) {
         val text = UNAVAILABLE + reason
@@ -84,6 +93,7 @@ class ScfbIo(
         try {
             createRegion(r)
             cam = camera?.let { setupCamera(r, it) }
+            gpuRegion = if (gpu) setupGpu(cam?.addr ?: r.addr, r) else null
             val pair = ParcelFileDescriptor.createSocketPair()
             touchOurs = pair[0]
             touchTheirs = pair[1]
@@ -96,7 +106,7 @@ class ScfbIo(
             return
         }
         // Last, so the guest only hears of the region once everything else is in place.
-        if (!(r.params + cam?.params.orEmpty()).all { image.call("addParam", it) }) {
+        if (!(r.params + cam?.params.orEmpty() + gpuRegion?.params.orEmpty()).all { image.call("addParam", it) }) {
             release()
             fail("VirtualMachineCustomImageConfig.Builder.addParam refused the scfb.* arguments")
             return
@@ -106,6 +116,28 @@ class ScfbIo(
         log("avf: display: ${r.width}x${r.height} shared framebuffer, ${r.size shr 20} MiB at guest 0x${r.addr.toString(16)}; " +
             "virtio-input multi-touch")
         cam?.let { log("avf: camera: ${it.size shr 20} MiB region at guest 0x${it.addr.toString(16)}, pictures ${it.width}x${it.height}") }
+        gpuRegion?.let { log("avf: gpu: SCGPU, gfxstream in the app, ${it.size shr 20} MiB region at guest 0x${it.addr.toString(16)}") }
+    }
+
+    /** The GPU's region below [belowAddr], made, and the renderer started on it; null (and why, logged) if it can't be. */
+    private fun setupGpu(belowAddr: Long, r: Scfb.Region): Scgpu.Region? {
+        val g = Scgpu.region(belowAddr).getOrElse {
+            log("avf: gpu off for this run: ${it.message}")
+            return null
+        }
+        return try {
+            val (sm, fd, b) = ashmem("scgpu", g.size)
+            gpuShm = sm
+            gpuFd = fd
+            gpuMap = b
+            val rc = ScgpuNative.start(b, g.addr, r.width, r.height)
+            if (rc != 0) throw IllegalStateException(ScgpuNative.startError(rc))
+            g
+        } catch (e: Exception) {
+            log("avf: gpu off for this run: ${describe(e)}")
+            releaseGpu(started = false)
+            null
+        }
     }
 
     /** The camera's region below the framebuffer's, made and primed; null (and why, logged) if it can't be. */
@@ -188,9 +220,24 @@ class ScfbIo(
             s.closeTouch()
             s.stats()?.let { log("avf: display: $it") }
         }
+        if (gpuRegion != null) {
+            val (n, failed, busyNs) = ScgpuNative.stats().toList()
+            log("avf: gpu: $n commands ($failed failed), %.1f s of them in the renderer".format(busyNs / 1e9))
+        }
         screen = null
         configured = false
         release()
+    }
+
+    private fun releaseGpu(started: Boolean = gpuRegion != null) {
+        if (started) runCatching { ScgpuNative.stop() }
+        gpuMap?.let { runCatching { SharedMemory.unmap(it) } }
+        gpuMap = null
+        runCatching { gpuFd?.close() }
+        gpuFd = null
+        runCatching { gpuShm?.close() }
+        gpuShm = null
+        gpuRegion = null
     }
 
     private fun releaseCamera() {
@@ -207,6 +254,7 @@ class ScfbIo(
 
     private fun release() {
         releaseCamera()
+        releaseGpu()
         hook?.remove()
         hook = null
         map?.let { runCatching { SharedMemory.unmap(it) } }
@@ -272,14 +320,18 @@ class ScfbIo(
                 forward(target, m, args)
             } catch (e: Exception) {
                 undo()
-                // The camera's region too much? The display without it, before nothing at all. (The guest then
-                // finds no camera header where sccam.addr says: plain RAM, all zero, and boots without a camera.)
-                if (c != null) {
-                    log("avf: camera: virtmgr refused the camera's region (${describe(e)}); trying without it")
-                    val undo2 = runCatching { patch(args[0]!!, withCamera = false) }.getOrNull()
+                // The camera's or the GPU's region too much? The display without them, before nothing at all. (The
+                // guest then finds no header where sccam.addr/scgpu.addr say: plain RAM, all zero, and boots
+                // without a camera, and draws in software.)
+                if (c != null || gpuRegion != null) {
+                    log("avf: virtmgr refused the camera's or the GPU's region (${describe(e)}); trying without them")
+                    val undo2 = runCatching { patch(args[0]!!, withExtras = false) }.getOrNull()
                     if (undo2 != null) {
                         try {
-                            return forward(target, m, args).also { releaseCamera() }
+                            return forward(target, m, args).also {
+                                releaseCamera()
+                                releaseGpu()
+                            }
                         } catch (e2: Exception) {
                             undo2()
                         }
@@ -292,7 +344,7 @@ class ScfbIo(
         }
 
         /** Appends the backing file(s) and the touch device; returns what puts the config back. */
-        private fun patch(config: Any, withCamera: Boolean = true): () -> Unit {
+        private fun patch(config: Any, withExtras: Boolean = true): () -> Unit {
             val raw = h.getRawConfig.invoke(config)!!
             val file = h.cmbfNew.newInstance()
             h.cmbfFile.set(file, shmFd)
@@ -307,12 +359,20 @@ class ScfbIo(
             val oldFiles = h.rawFiles.get(raw)
             val oldInputs = h.rawInputs.get(raw)
             var files = append(h.rawFiles.type.componentType!!, oldFiles, file)
-            if (withCamera && c != null && camFd != null) {
+            if (withExtras && c != null && camFd != null) {
                 val cf = h.cmbfNew.newInstance()
                 h.cmbfFile.set(cf, camFd)
                 h.cmbfRangeStart.setLong(cf, c.addr)
                 h.cmbfSize.setLong(cf, c.size)
                 files = append(h.rawFiles.type.componentType!!, files, cf)
+            }
+            val g = gpuRegion
+            if (withExtras && g != null && gpuFd != null) {
+                val gf = h.cmbfNew.newInstance()
+                h.cmbfFile.set(gf, gpuFd)
+                h.cmbfRangeStart.setLong(gf, g.addr)
+                h.cmbfSize.setLong(gf, g.size)
+                files = append(h.rawFiles.type.componentType!!, files, gf)
             }
             h.rawFiles.set(raw, files)
             h.rawInputs.set(raw, append(h.rawInputs.type.componentType!!, oldInputs, dev))
@@ -392,6 +452,13 @@ class ScfbIo(
             }
             thread = null
             control = null
+        }
+
+        /** SCGPU: the overlay goes over the framebuffer once the guest shows its frames through the host. */
+        override fun overlayWanted(): Boolean = gpuRegion != null && ScgpuNative.presenting()
+
+        override fun setOverlaySurface(surface: Surface?, width: Int, height: Int) {
+            if (gpuRegion != null) ScgpuNative.setWindow(surface, width, height)
         }
 
         fun closeTouch() {
