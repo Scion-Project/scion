@@ -37,7 +37,7 @@ Tooling: `otool -h/-l`, NDK `llvm-objdump --macho`, a small Apple-DT parser.
 4. SPTM→kernel ABI is visible in the kernel's `__TEXT_BOOT_EXEC` trampoline:
    `x0` = handoff selector (4 or 5), `x1` = boot-args ptr, `x2` = aux; it does
    `x0=x1; x1=x2` then enters the normal kernel `_start`.
-5. **Milestone 0 done** (dylanneve1/Inferno#2): SPTM runs from its entry, turns its MMU
+5. **Milestone 0 done** (Scion-Project/pyre#2): SPTM runs from its entry, turns its MMU
    on and walks the device tree. **Next blocker:** SPTM requires about 60 named
    `/chosen/memory-map` image regions (`SPTM-rx`, `TXM-bx`, `BootKC-rs`, …, §2.6) that
    iBoot publishes and Inferno doesn't yet. GL1 is enough (§2.5), so the boot flow,
@@ -268,7 +268,7 @@ Consequences for the hand-off (this is the whole point):
   (SPTM's exception vectors read `S3_6_C15_C8_0`) until the GXF branch (`ios27/gxf`)
   adds them — expected; note and continue.
 
-### 2.6 Measured on the emulator (Milestone 0, dylanneve1/Inferno#2)
+### 2.6 Measured on the emulator (Milestone 0, Scion-Project/pyre#2)
 
 Real 27.0.1 SPTM/TXM/kernel/DT/restore trustcache, on the Android emulator, traced with
 `-d in_asm,exec,int`. Facts established by running SPTM, each cross-checked against the
@@ -363,7 +363,7 @@ decompressed Mach-O directly, and/or the IM4P — IM4P type 4CCs are **`sptm`** 
 **`trxm`**, so `apple_boot_load_kernel`'s type check must be generalized or a sibling
 added). Firmware stays read-only research input.
 
-### Milestone 0 — "SPTM starts executing" (minimum) — **DONE** (dylanneve1/Inferno#2)
+### Milestone 0 — "SPTM starts executing" (minimum) — **DONE** (Scion-Project/pyre#2)
 
 As implemented: SPTM loads via master's `apple_boot_load_monitor(…, "sptm")` and maps via
 `t8030_map_monitor()`. The boot info is built from `apple_boot_setup_bootargs()` plus the

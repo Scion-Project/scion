@@ -20,12 +20,12 @@ these paths.**
 
 | Step | Fork PR | State |
 |---|---|---|
-| GXF/SPTM system registers (GL1) | [Inferno#1](https://github.com/dylanneve1/pyre/pull/1) | merged |
-| `sptm=` load path: SPTM runs and reaches its memory-map lookups (Milestone 0) | [Inferno#2](https://github.com/dylanneve1/pyre/pull/2) | merged, measured (SPEC §2.6) |
-| `txm=` load and map | [Inferno#3](https://github.com/dylanneve1/pyre/pull/3) | merged |
-| iOS 27 `/chosen` + `dart-sep` TXM properties | [Inferno#5](https://github.com/dylanneve1/pyre/pull/5) | merged |
-| `a13-test` bench machine + register test in CI; **fix**: the #1 placeholders had replaced five A13 registers (MMU/FED error status, `S3_4_c15_c0_5`, `AMX_STATUS`, `AMX_CTL`) with plain storage on release builds | [Inferno#17](https://github.com/dylanneve1/pyre/pull/17) | merged; app bumped in [#73](https://github.com/dylanneve1/scion/pull/73) |
-| iBoot-style image layout + `/chosen/memory-map` image regions, `cl4-entropy`, patch-check dry-run | [Inferno#18](https://github.com/dylanneve1/pyre/pull/18) | merged; dry-run passes on the real images, **not yet run with a DT** |
+| GXF/SPTM system registers (GL1) | [Inferno#1](https://github.com/Scion-Project/pyre/pull/1) | merged |
+| `sptm=` load path: SPTM runs and reaches its memory-map lookups (Milestone 0) | [Inferno#2](https://github.com/Scion-Project/pyre/pull/2) | merged, measured (SPEC §2.6) |
+| `txm=` load and map | [Inferno#3](https://github.com/Scion-Project/pyre/pull/3) | merged |
+| iOS 27 `/chosen` + `dart-sep` TXM properties | [Inferno#5](https://github.com/Scion-Project/pyre/pull/5) | merged |
+| `a13-test` bench machine + register test in CI; **fix**: the #1 placeholders had replaced five A13 registers (MMU/FED error status, `S3_4_c15_c0_5`, `AMX_STATUS`, `AMX_CTL`) with plain storage on release builds | [Inferno#17](https://github.com/Scion-Project/pyre/pull/17) | merged; app bumped in [#73](https://github.com/Scion-Project/scion/pull/73) |
+| iBoot-style image layout + `/chosen/memory-map` image regions, `cl4-entropy`, patch-check dry-run | [Inferno#18](https://github.com/Scion-Project/pyre/pull/18) | merged; dry-run passes on the real images, **not yet run with a DT** |
 
 ### What SPTM needs from the boot chain (static analysis of the 27.0.1 t8030 SPTM)
 

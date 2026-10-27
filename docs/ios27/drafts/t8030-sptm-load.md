@@ -1,6 +1,6 @@
 # Milestone 0 draft — `sptm=` load path for t8030
 
-> **Superseded.** The implemented version is dylanneve1/Inferno#2. It reuses
+> **Superseded.** The implemented version is Scion-Project/pyre#2. It reuses
 > `apple_boot_load_monitor()`/`t8030_map_monitor()`, builds the boot info from the rev 3
 > kernel boot-args plus the handoff pointer, and sets `CPACR_EL1.FPEN` at handoff
 > (spec §2.6). This draft is kept for history.
