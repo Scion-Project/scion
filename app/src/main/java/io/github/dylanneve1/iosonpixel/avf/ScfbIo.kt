@@ -78,6 +78,8 @@ class ScfbIo(
     private var gpuShm: SharedMemory? = null
     private var gpuFd: ParcelFileDescriptor? = null
     private var gpuMap: ByteBuffer? = null
+    private var bellOurs: ParcelFileDescriptor? = null
+    private var bellTheirs: ParcelFileDescriptor? = null
 
     private fun fail(reason: String) {
         val text = UNAVAILABLE + reason
@@ -116,7 +118,7 @@ class ScfbIo(
         log("avf: display: ${r.width}x${r.height} shared framebuffer, ${r.size shr 20} MiB at guest 0x${r.addr.toString(16)}; " +
             "virtio-input multi-touch")
         cam?.let { log("avf: camera: ${it.size shr 20} MiB region at guest 0x${it.addr.toString(16)}, pictures ${it.width}x${it.height}") }
-        gpuRegion?.let { log("avf: gpu: SCGPU, gfxstream in the app, ${it.size shr 20} MiB region at guest 0x${it.addr.toString(16)}") }
+        gpuRegion?.let { log("avf: gpu: SCGPU, gfxstream in the app, ${it.size shr 20} MiB region at guest 0x${it.addr.toString(16)}, " + (if (bellOurs != null) "doorbell" else "polling")) }
     }
 
     /** The GPU's region below [belowAddr], made, and the renderer started on it; null (and why, logged) if it can't be. */
@@ -130,7 +132,13 @@ class ScfbIo(
             gpuShm = sm
             gpuFd = fd
             gpuMap = b
-            val rc = ScgpuNative.start(b, g.addr, r.width, r.height)
+            // The doorbell, when this build can name an input device (the guest finds it by its name).
+            if (hooks?.mtName != null) {
+                val pair = ParcelFileDescriptor.createSocketPair()
+                bellOurs = pair[0]
+                bellTheirs = pair[1]
+            }
+            val rc = ScgpuNative.start(b, g.addr, r.width, r.height, bellOurs?.fd ?: -1)
             if (rc != 0) throw IllegalStateException(ScgpuNative.startError(rc))
             g
         } catch (e: Exception) {
@@ -231,6 +239,9 @@ class ScfbIo(
 
     private fun releaseGpu(started: Boolean = gpuRegion != null) {
         if (started) runCatching { ScgpuNative.stop() }
+        listOf(bellOurs, bellTheirs).forEach { runCatching { it?.close() } }
+        bellOurs = null
+        bellTheirs = null
         gpuMap?.let { runCatching { SharedMemory.unmap(it) } }
         gpuMap = null
         runCatching { gpuFd?.close() }
@@ -375,7 +386,18 @@ class ScfbIo(
                 files = append(h.rawFiles.type.componentType!!, files, gf)
             }
             h.rawFiles.set(raw, files)
-            h.rawInputs.set(raw, append(h.rawInputs.type.componentType!!, oldInputs, dev))
+            var inputs = append(h.rawInputs.type.componentType!!, oldInputs, dev)
+            val bell = bellTheirs
+            if (withExtras && g != null && bell != null && h.mtName != null) {
+                // SCGPU's doorbell: a tiny multi-touch device the guest's driver gives to SCGPU by its name
+                val bt = h.mtNew.newInstance()
+                h.mtWidth.setInt(bt, 16)
+                h.mtHeight.setInt(bt, 16)
+                h.mtPfd.set(bt, bell)
+                h.mtName.set(bt, Scgpu.BELL_NAME)
+                inputs = append(h.rawInputs.type.componentType!!, inputs, h.multiTouch.invoke(null, bt)!!)
+            }
+            h.rawInputs.set(raw, inputs)
             return {
                 runCatching { h.rawFiles.set(raw, oldFiles) }
                 runCatching { h.rawInputs.set(raw, oldInputs) }
