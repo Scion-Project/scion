@@ -15,6 +15,12 @@ object Scgpu {
     /** A mailbox and a pool for the pipe's buffers and the transfers' staging (11 MiB for a whole screen). */
     const val SIZE = 64L shl 20
 
+    /**
+     * The doorbell's virtio-input device: the guest's driver hands the device of this name to SCGPU
+     * (hakios.scgpu.h SCGPU_BELL_NAME) instead of making it a touch screen.
+     */
+    const val BELL_NAME = "scion-scgpu"
+
     data class Region(val addr: Long, val size: Long) {
         val params: List<String>
             get() = listOf("scgpu.addr=0x" + addr.toString(16), "scgpu.size=0x" + size.toString(16))
@@ -32,8 +38,11 @@ object Scgpu {
 
 /** The renderer and its device thread (scgpu.c, in libscfb next to the frame copy). */
 internal object ScgpuNative {
-    /** gfxstream up and the region's header written: before the VM starts. 0, or a negative reason. */
-    @JvmStatic external fun start(region: ByteBuffer, guestAddr: Long, fbWidth: Int, fbHeight: Int): Int
+    /**
+     * gfxstream up and the region's header written: before the VM starts. [bellFd]: the app's end of the
+     * doorbell's socket (dup'd), or -1 to poll. 0, or a negative reason.
+     */
+    @JvmStatic external fun start(region: ByteBuffer, guestAddr: Long, fbWidth: Int, fbHeight: Int, bellFd: Int): Int
 
     /** Whether the guest has begun to show its frames through the host. */
     @JvmStatic external fun presenting(): Boolean
