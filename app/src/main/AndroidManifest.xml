@@ -41,6 +41,7 @@
 
         <activity
             android:name=".DisplayActivity"
+            android:enableOnBackInvokedCallback="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:screenOrientation="portrait"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen" />

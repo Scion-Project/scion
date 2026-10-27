@@ -197,7 +197,7 @@ swipe started on the physical edge never reaches the VM. Settings → **Display*
   swipe; down from the top-right corner = Control Center. The left/right edges
   also get `View.setSystemGestureExclusionRects` (Android honours at most 200 dp
   per edge, so the middle 200 dp).
-- **Hardware buttons bar** (Vol−/Vol+/Home/Apps/Power): Always, **Auto-hide**
+- **Hardware buttons bar** (Vol−/Vol+/Home/Apps/Power/Exit): Always, **Auto-hide**
   (default: hidden; a tap on the border or a two-finger tap shows it, it hides 3 s
   after the last press), or Never. Hidden, the guest screen takes the space.
 
@@ -207,9 +207,13 @@ both `ScreenView` (RFB/QMP touch) and `SurfaceScreen` (Surface backends).
 
 Android limit: an app can't fully disable the system home gesture (exclusion
 rects are ignored on the bottom edge, and the home gesture still wins from the
-physical edge). To block home and recents, use **App pinning** (Android
-Settings → Security & privacy → More security settings → App pinning) and pin
-the display screen.
+physical edge). So the display screen pins itself: **Pin the guest screen**
+(default on) calls `startLockTask()` once per open, which is Android's app
+pinning for a non-device-owner app (one confirm prompt). Pinned, home, recents
+and the notification shade are off; **Exit** on the bar calls `stopLockTask()`
+and closes, and Android's own unpin gesture (swipe up and hold) still works.
+Android's back gesture never closes the display: an `OnBackInvokedCallback`
+(`onBackPressed` before 13) shows the bar instead.
 
 ## Findings worth knowing
 
