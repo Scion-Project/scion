@@ -114,7 +114,8 @@ class AvfBackend(
                 val camera = if (install.settings.avfCamera) {
                     ScfbIo.CameraSpec(SccamCamera.cameras(app)) { region, log -> SccamCamera(app, region, log).also { it.start() } }
                 } else null
-                ScfbIo(w, h, { VmState.notice(it) }, camera)
+                // gpu=scgpu: the GPU is this app's (avf/Scgpu.kt), on the display's hook too.
+                ScfbIo(w, h, { VmState.notice(it) }, camera, gpu = AvfLayout(install.dir).scgpu)
             } else AvfIo.None
     }
 }
@@ -247,10 +248,16 @@ class AvfLayout(val dir: File) {
     val cpus: String? get() = prop("cpus")
     val displaySize: Pair<Int, Int>? get() = prop("display")?.let { Scfb.parseSize(it) }
     val gpu: AvfApi.Gpu?
-        get() = prop("gpu")?.takeIf { it != "off" && it != "0" }?.let { backend ->
+        get() = prop("gpu")?.takeIf { it != "off" && it != "0" && it != SCGPU }?.let { backend ->
             AvfApi.Gpu(backend = if (backend == "1" || backend == "on") "gfxstream" else backend,
                 contextTypes = (prop("gpu.contexts") ?: "gfxstream-gles").split(',').map { it.trim() }.filter { it.isNotEmpty() })
         }
+
+    /**
+     * gpu=scgpu: no virtio-gpu for crosvm; the app runs the guest's GPU itself (avf/Scgpu.kt) and shows
+     * its frames in its own window. Needs the Experimental AVF display, whose hook lends the region.
+     */
+    val scgpu: Boolean get() = prop("gpu") == SCGPU
 
     data class Disk(val file: File, val writable: Boolean)
 
@@ -308,6 +315,8 @@ class AvfLayout(val dir: File) {
 
     companion object {
         const val MANIFEST = "avf.properties"
+        /** avf.properties gpu= value: the app's own GPU (SCGPU), no virtio-gpu for crosvm. */
+        const val SCGPU = "scgpu"
 
         /**
          * hvc0 is a virtio-console fed to the same output as ttyS0 (crosvm.rs); earlycon catches

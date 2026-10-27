@@ -120,6 +120,16 @@ interface SurfaceDisplay {
      * framebuffer. Return false to get [touch] for the first pointer instead.
      */
     fun motion(event: MotionEvent, w: Int, h: Int): Boolean = false
+
+    /**
+     * Whether a second Surface over the first is wanted now (polled by the screen): a renderer that
+     * shows the guest's frames itself (AVF SCGPU), once it has frames to show; until then the first
+     * Surface has the picture.
+     */
+    fun overlayWanted(): Boolean = false
+
+    /** The overlay's Surface ([width] x [height]) from now on, or null when it goes. */
+    fun setOverlaySurface(surface: Surface?, width: Int, height: Int) = Unit
 }
 
 /**
