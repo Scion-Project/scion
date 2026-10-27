@@ -1,5 +1,6 @@
 package io.github.dylanneve1.iosonpixel
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.ActivityManager
 import android.graphics.Color
@@ -116,6 +117,8 @@ class DisplayActivity : Activity() {
         }
     }
 
+    // Android 12 only: 13+ uses the OnBackInvokedCallback (enableOnBackInvokedCallback in the manifest).
+    @SuppressLint("GestureBackNavigation")
     @Deprecated("Back before Android 13 (no OnBackInvokedCallback)")
     override fun onBackPressed() = showBar()
 
