@@ -13,7 +13,7 @@ port of the [Inferno](https://github.com/ChefKissInc/Inferno) QEMU fork.
 > - **QEMU (Pyre):** iOS 14 on an emulated iPhone 11 boots to the home screen. It's slow: every
 >   Apple CPU instruction goes through QEMU's TCG JIT.
 > - **AVF (hardware virtualization):** Apple's open-source XNU (via
->   [HackiOS](https://github.com/dylanneve1/hackios-xnu-kernel)) runs as a pKVM guest on the
+>   [HackiOS](https://github.com/Scion-Project/hackios-xnu-kernel)) runs as a pKVM guest on the
 >   Pixel's own CPU cores, with the iOS 16.5 userland. It reaches the **home screen in about 80 s**.
 >   Touch is still being fixed.
 
@@ -41,7 +41,7 @@ repo then gets the result running on the phone.
                                                   └─ HMP monitor socket ◀─ button bar (F2–F6)
 ```
 
-* **`third_party/inferno`** is [dylanneve1/Inferno](https://github.com/dylanneve1/pyre)'s
+* **`third_party/inferno`** is [Scion-Project/pyre](https://github.com/Scion-Project/pyre)'s
   `pixel` branch: upstream Inferno plus the Android/Tensor patches (see below).
 * **`native/build-android.sh`** cross-compiles QEMU and its static deps (glib,
   pixman, nettle+GMP, libtasn1, lzfse) with the NDK, and drops the binary into
@@ -107,7 +107,7 @@ current limits. In short:
    ./gradlew installDebug
    ```
 4. Open **Scion**, check that everything is ✓, keep vCPUs at 4
-   ([#33](https://github.com/dylanneve1/scion/issues/33)), then tap
+   ([#33](https://github.com/Scion-Project/scion/issues/33)), then tap
    **Start**. If it fails, tap **Share debug bundle** and send the zip.
 
 ## Tensor G5 notes
@@ -136,7 +136,7 @@ GPU: Imagination (Rogue-family DDK, BVNC `71.2.2448.1212`), 396–1094 MHz.
   crosvm, and Apple-only CPU instructions don't exist on Tensor cores, so it
   isn't a drop-in replacement. The default backend is QEMU's TCG JIT; the AVF
   backend is being explored in
-  [scion-avf](https://github.com/dylanneve1/scion-avf) and will
+  [scion-avf](https://github.com/Scion-Project/scion-avf) and will
   become a selectable option in the app (#19).
 
 [docs/ROADMAP.md](docs/ROADMAP.md) has the performance plan, including what
