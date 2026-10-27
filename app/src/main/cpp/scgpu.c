@@ -41,6 +41,7 @@
 #define SCGPU_RESP_MAX          0x1000u
 #define SCGPU_POOL_OFF          0x20000u
 #define SCGPU_F_HOST_READY      (1u << 0)
+#define SCGPU_F_RING            (1u << 1)
 #define SCGPU_G_PRESENTING      (1u << 0)
 #define SCGPU_CMD_TRANSFER      0x0f00u
 
@@ -55,8 +56,12 @@ struct scgpu_header {
 	uint64_t commands, presents, host_busy_ns;
 	uint32_t guest_flags;
 	uint32_t host_sleeping, guest_waiting;
-	uint32_t reserved[13];
+	uint32_t ring_off, ring_size, ring_head, ring_tail;
+	uint32_t reserved[9];
 };
+
+/* a record of the stream ring: the bytes follow, then padding to 16 */
+struct scgpu_record { uint32_t resource_id, ctx_id, len, reserved; };
 
 struct scgpu_transfer {
 	uint32_t type, flags;
@@ -157,6 +162,7 @@ static struct {
 	uint32_t said_unknown;
 	int bell;                       /* the doorbell's socket, or -1: polling */
 	uint64_t rings_in, rings_out, sleeps;
+	uint64_t records, record_bytes;
 } S = { .window_lock = PTHREAD_MUTEX_INITIALIZER, .bell = -1 };
 
 #define SPIN_NS                 200000u         /* after a command, look for the next this long, then sleep */
@@ -417,11 +423,75 @@ reply:
 	return resp_len;
 }
 
+static void ring_guest(void);
+
+/*
+ * The stream ring: every record the guest has put in, to its pipe, in order (sys/hakios.scgpu.h).
+ * Run before every mailbox command, so a command comes after every byte written before it. 1 if
+ * anything was taken.
+ */
+static int
+drain(void)
+{
+	uint32_t size = __atomic_load_n((uint32_t *)(uintptr_t)&S.h->ring_size, __ATOMIC_ACQUIRE);
+	uint32_t off = S.h->ring_off, tail = S.h->ring_tail, any = 0;
+
+	if (size == 0 || (size & (size - 1)) || off < SCGPU_POOL_OFF || (uint64_t)off + size > S.size) {
+		return 0;
+	}
+	uint8_t *ring = S.base + off;
+	uint32_t head = __atomic_load_n((uint32_t *)(uintptr_t)&S.h->ring_head, __ATOMIC_ACQUIRE);
+	while (tail != head) {
+		struct scgpu_record r;
+		uint32_t pos = tail & (size - 1);
+		memcpy(&r, ring + pos, sizeof(r));
+		if (r.len > size - sizeof(r)) {
+			ERR("stream ring: a record of %u bytes at %u: the ring is broken; skipping to its head", r.len, tail);
+			tail = head;
+			break;
+		}
+		uint32_t at = (pos + (uint32_t)sizeof(r)) & (size - 1);
+		uint32_t first = r.len < size - at ? r.len : size - at;
+		struct iovec iov[2] = { { ring + at, first }, { ring, r.len - first } };
+		struct box b = { 0, 0, 0, r.len, 1, 1 };
+		int err = sr.write(r.resource_id, r.ctx_id, 0, 0, 0, &b, 0, iov, r.len > first ? 2 : 1);
+		if (err) {
+			S.errors++;
+			if (S.errors <= 16) {
+				ERR("stream ring: %u bytes to resource %u (ctx %u): %d", r.len, r.resource_id, r.ctx_id, err);
+			}
+		}
+		tail += (uint32_t)sizeof(r) + ((r.len + 15) & ~15u);
+		__atomic_store_n((uint32_t *)(uintptr_t)&S.h->ring_tail, tail, __ATOMIC_RELEASE);
+		S.records++;
+		S.record_bytes += r.len;
+		any = 1;
+		head = __atomic_load_n((uint32_t *)(uintptr_t)&S.h->ring_head, __ATOMIC_ACQUIRE);
+	}
+	if (any) {
+		ring_guest();                   /* it may wait for room */
+	}
+	return any;
+}
+
+/* The guest, if it waits asleep (for a reply or for room): an input event, an interrupt there. */
+static void
+ring_guest(void)
+{
+	__atomic_thread_fence(__ATOMIC_SEQ_CST);
+	if (S.bell >= 0 && __atomic_load_n((uint32_t *)(uintptr_t)&S.h->guest_waiting, __ATOMIC_RELAXED)) {
+		static const uint16_t syn[4] = { 0, 0, 0, 0 };      /* EV_SYN SYN_REPORT */
+		if (write(S.bell, syn, sizeof(syn)) == (ssize_t)sizeof(syn)) {
+			S.rings_out++;
+		}
+	}
+}
+
 /* One line every 5 s while commands come: how busy the device is, and how much it slept. */
 static void
 report(uint64_t now)
 {
-	static uint64_t at, commands, busy, rings_in, rings_out, sleeps;
+	static uint64_t at, commands, busy, rings_in, rings_out, sleeps, records, record_bytes;
 
 	if (at == 0) {
 		at = now;
@@ -430,9 +500,10 @@ report(uint64_t now)
 		return;
 	}
 	double secs = (now - at) / 1e9;
-	if (S.commands != commands) {
-		LOG("SCGPU: %.0f commands/s, %.1f%% of the time in them; %.0f sleeps/s, rung %.0f/s, rang %.0f/s%s",
-		    (S.commands - commands) / secs, (S.busy_ns - busy) / 1e7 / secs, (S.sleeps - sleeps) / secs,
+	if (S.commands != commands || S.records != records) {
+		LOG("SCGPU: %.0f commands/s, %.0f stream records/s (%.1f MB/s), %.1f%% of the time in them; %.0f sleeps/s, "
+		    "rung %.0f/s, rang %.0f/s%s", (S.commands - commands) / secs, (S.records - records) / secs,
+		    (S.record_bytes - record_bytes) / 1e6 / secs, (S.busy_ns - busy) / 1e7 / secs, (S.sleeps - sleeps) / secs,
 		    (S.rings_in - rings_in) / secs, (S.rings_out - rings_out) / secs, S.bell < 0 ? " (polling)" : "");
 	}
 	at = now;
@@ -441,6 +512,8 @@ report(uint64_t now)
 	rings_in = S.rings_in;
 	rings_out = S.rings_out;
 	sleeps = S.sleeps;
+	records = S.records;
+	record_bytes = S.record_bytes;
 }
 
 static void *
@@ -452,6 +525,11 @@ serve(void *arg)
 	uint64_t last = now_ns();
 
 	while (!S.stop) {
+		uint64_t d0 = now_ns();
+		if (drain()) {
+			last = now_ns();
+			S.busy_ns += last - d0;
+		}
 		uint32_t seq = __atomic_load_n((uint32_t *)(uintptr_t)req, __ATOMIC_ACQUIRE);
 		if (seq == seen) {
 			uint64_t idle = now_ns() - last;
@@ -463,7 +541,8 @@ serve(void *arg)
 				/* asleep until the guest rings: say so, then look once more (its half is in scgpu_ctrl) */
 				__atomic_store_n((uint32_t *)(uintptr_t)&S.h->host_sleeping, 1, __ATOMIC_RELAXED);
 				__atomic_thread_fence(__ATOMIC_SEQ_CST);
-				if (__atomic_load_n((uint32_t *)(uintptr_t)req, __ATOMIC_ACQUIRE) == seen) {
+				if (__atomic_load_n((uint32_t *)(uintptr_t)req, __ATOMIC_ACQUIRE) == seen &&
+				    __atomic_load_n((uint32_t *)(uintptr_t)&S.h->ring_head, __ATOMIC_ACQUIRE) == S.h->ring_tail) {
 					char buf[256];
 					ssize_t n = read(S.bell, buf, sizeof(buf));
 					S.sleeps++;
@@ -486,6 +565,7 @@ serve(void *arg)
 			continue;
 		}
 		seen = seq;
+		drain();                        /* (everything written before the command comes first) */
 		uint64_t t0 = now_ns();
 		uint32_t n = handle(S.h->req_len);
 		S.h->resp_len = n;
@@ -496,14 +576,7 @@ serve(void *arg)
 		S.h->commands = S.commands;
 		S.h->host_busy_ns = S.busy_ns;
 		__atomic_store_n((uint32_t *)(uintptr_t)&S.h->resp_seq, seq, __ATOMIC_RELEASE);
-		/* the guest asleep on the doorbell is rung: an input event, an interrupt there */
-		__atomic_thread_fence(__ATOMIC_SEQ_CST);
-		if (S.bell >= 0 && __atomic_load_n((uint32_t *)(uintptr_t)&S.h->guest_waiting, __ATOMIC_RELAXED)) {
-			static const uint16_t syn[4] = { 0, 0, 0, 0 };      /* EV_SYN SYN_REPORT */
-			if (write(S.bell, syn, sizeof(syn)) == (ssize_t)sizeof(syn)) {
-				S.rings_out++;
-			}
-		}
+		ring_guest();                   /* the guest asleep on the doorbell: an input event, an interrupt there */
 		report(last);
 	}
 	return NULL;
@@ -585,13 +658,14 @@ Java_io_github_dylanneve1_iosonpixel_avf_ScgpuNative_start(JNIEnv *env, jclass c
 	S.h->num_capsets = 1;
 	S.commands = S.errors = S.busy_ns = 0;
 	S.rings_in = S.rings_out = S.sleeps = 0;
+	S.records = S.record_bytes = 0;
 	S.bell = bell_fd >= 0 ? dup(bell_fd) : -1;       /* (ours: the app closes its own) */
 	S.stop = 0;
 	if (pthread_create(&S.thread, NULL, serve, NULL) != 0) {
 		return -5;
 	}
 	pthread_setname_np(S.thread, "scgpu");
-	__atomic_store_n((uint32_t *)(uintptr_t)&S.h->flags, SCGPU_F_HOST_READY, __ATOMIC_RELEASE);
+	__atomic_store_n((uint32_t *)(uintptr_t)&S.h->flags, SCGPU_F_HOST_READY | SCGPU_F_RING, __ATOMIC_RELEASE);
 	S.running = 1;
 	LOG("SCGPU: gfxstream up, %llu MiB region at guest %#llx, display %dx%d, %s", (unsigned long long)(S.size >> 20),
 	    (unsigned long long)S.guest, fb_w, fb_h, S.bell >= 0 ? "doorbell" : "polling");
