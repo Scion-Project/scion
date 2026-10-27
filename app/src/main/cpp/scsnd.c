@@ -6,7 +6,8 @@
  *
  * The region and its protocol: hackios-xnu-kernel xnu/files/bsd/sys/hakios.scsnd.h (copied below).
  * A thread watches the ring: when samples come it opens an AAudio stream, whose callback takes them
- * out (at most a little behind: if more has built up, it skips ahead), scaled by iOS's volume; after
+ * out (at most a little behind: if more has built up, it skips ahead; and not before a little is in, so
+ * that a vCPU late by a few milliseconds is not a click), scaled by iOS's volume; after
  * two seconds without any it closes the stream again, so a silent iOS keeps no audio path awake.
  */
 #include <aaudio/AAudio.h>
@@ -52,7 +53,8 @@ _Static_assert(sizeof(struct scsnd_header) == 128, "scsnd_header");
 #define RING_OFF        4096u
 #define RING_BYTES      (256u << 10)            /* 1.4 s; the callback keeps it near empty */
 #define BEHIND_MAX_MS   120u                    /* more than this waiting: skip to... */
-#define BEHIND_TO_MS    40u                     /* ... this */
+#define BEHIND_TO_MS    50u                     /* ... this */
+#define PRIME_MS        50u                     /* this much in before it plays, at first and after running dry */
 #define IDLE_NS         2000000000ull           /* no samples this long: the stream is closed */
 
 static struct {
@@ -65,6 +67,9 @@ static struct {
 	volatile int stop;
 	AAudioStream *stream;
 	volatile int broken;                    /* the stream's error callback: closed and opened again on the next sound */
+	int priming;                            /* silence until PRIME_MS is in (or nothing more came for as long) */
+	uint32_t prime_head;                    /* ... the head when last looked at, */
+	uint64_t prime_ns;                      /* ... and when it last moved */
 	volatile uint64_t last_ns;              /* when the callback last had samples */
 	uint32_t vol_below, vol_muted;          /* the volume the gain is for */
 	int32_t gain;                           /* Q15 */
@@ -116,6 +121,19 @@ take(AAudioStream *stream, void *user, void *audio, int32_t frames)
 		have -= skip;
 		h->skipped += skip / FRAME;
 	}
+	if (P.priming) {
+		uint64_t now = now_ns();
+		if (head != P.prime_head) {
+			P.prime_head = head;
+			P.prime_ns = now;
+		}
+		/* (a short sound, less than PRIME_MS of it in all, is played once nothing more has come for that long) */
+		if (have < RATE * FRAME / 1000 * PRIME_MS && now - P.prime_ns < PRIME_MS * 1000000ull) {
+			have = 0;               /* (taken from when there is enough) */
+		} else {
+			P.priming = 0;
+		}
+	}
 	uint32_t n = have < want ? have : want;
 	uint32_t at = tail & (RING_BYTES - 1), first = n < RING_BYTES - at ? n : RING_BYTES - at;
 	memcpy(out, P.ring + at, first);
@@ -136,6 +154,9 @@ take(AAudioStream *stream, void *user, void *audio, int32_t frames)
 	if (n < want && n > 0) {
 		h->underruns++;
 		P.run_underruns++;
+	}
+	if (n < want) {
+		P.priming = 1;
 	}
 	return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
@@ -176,6 +197,9 @@ open_stream(void)
 		return -1;
 	}
 	P.broken = 0;
+	P.priming = 1;
+	P.prime_head = P.h->tail;
+	P.prime_ns = now_ns();
 	P.last_ns = now_ns();
 	P.run_played = P.run_underruns = 0;
 	P.run_start_ns = P.last_ns;
