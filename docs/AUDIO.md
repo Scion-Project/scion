@@ -1,7 +1,7 @@
 # Guest audio: iOS speaker out of the Pixel's speaker
 
 Plan for getting sound from the emulated iPhone 11 (t8030, iOS 14) out of the phone. Speaker
-output first, microphone later. Status: **milestone 1 in review** (dylanneve1/Inferno#24). iOS
+output first, microphone later. Status: **milestone 1 in review** (Scion-Project/pyre#24). iOS
 loads its audio drivers, but nothing plays yet. See [Status](#status-2026-10-21) and
 [Work items](#work-items).
 

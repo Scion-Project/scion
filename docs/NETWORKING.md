@@ -281,7 +281,7 @@ which is handy for testing.
 
 ## Measured (M1, desktop)
 
-Inferno [#21](https://github.com/dylanneve1/Inferno/pull/21) adds
+Inferno [#21](https://github.com/Scion-Project/pyre/pull/21) adds
 `usb-uplink-type=net`. For that type, `usb-uplink-addr` names the netdev:
 
 ```
