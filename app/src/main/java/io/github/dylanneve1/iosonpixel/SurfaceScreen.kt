@@ -48,6 +48,7 @@ class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
             postDelayed(this, OVERLAY_POLL_MS)
         }
     }
+    private val corners = DisplayCorners.Overlay(context).apply { visibility = View.GONE }
     private val label = TextView(context).apply {
         setTextColor(Color.LTGRAY)
         textSize = 14f
@@ -61,6 +62,10 @@ class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
     var border = 0
         set(value) { if (field != value) { field = value; requestLayout() } }
 
+    /** The iPhone X's rounded corners over the picture ([DisplayCorners]). */
+    var rounded = false
+        set(value) { field = value; corners.visibility = if (value) View.VISIBLE else View.GONE }
+
     /** Shown over the display until the first frame size arrives. */
     var placeholder: String
         get() = label.text.toString()
@@ -73,6 +78,7 @@ class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
         setBackgroundColor(Color.BLACK)
         addView(surfaceView)
         addView(overlay)
+        addView(corners)        // (a view of the window: drawn over both SurfaceViews' holes)
         addView(label)
         placeholder = "Waiting for the VM display…"
         surfaceView.holder.addCallback(this)
@@ -99,6 +105,7 @@ class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
         val ch = maxOf(b.height, 1)
         surfaceView.measure(MeasureSpec.makeMeasureSpec(cw, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(ch, MeasureSpec.EXACTLY))
         overlay.measure(MeasureSpec.makeMeasureSpec(cw, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(ch, MeasureSpec.EXACTLY))
+        corners.measure(MeasureSpec.makeMeasureSpec(cw, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(ch, MeasureSpec.EXACTLY))
         label.measure(MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY))
     }
 
@@ -107,6 +114,7 @@ class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
         val top = (b - t - surfaceView.measuredHeight) / 2
         surfaceView.layout(left, top, left + surfaceView.measuredWidth, top + surfaceView.measuredHeight)
         overlay.layout(left, top, left + surfaceView.measuredWidth, top + surfaceView.measuredHeight)
+        corners.layout(left, top, left + surfaceView.measuredWidth, top + surfaceView.measuredHeight)
         label.layout(0, 0, r - l, b - t)
         guest.set(left, top, left + surfaceView.measuredWidth, top + surfaceView.measuredHeight)
         edge.excludeSideEdges(guest)
