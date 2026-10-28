@@ -170,6 +170,7 @@ static struct {
 	uint64_t records, record_bytes;
 	uint64_t ring_commands;                 /* commands run from the ring (SCGPU_REC_CMD) */
 	uint64_t ring_uploads;                  /* ... of which uploads */
+	volatile int tid;                       /* the device thread's (vmboost.c) */
 } S = { .window_lock = PTHREAD_MUTEX_INITIALIZER, .bell = -1 };
 
 #define SPIN_NS                 200000u         /* after a command, look for the next this long, then sleep */
@@ -720,10 +721,27 @@ report(uint64_t now)
 	ring_uploads = S.ring_uploads;
 }
 
+void vmboost_start(void);
+void vmboost_stop(void);
+
+/* For vmboost.c: how much the guest has asked of the GPU so far, and the thread that does it. */
+uint64_t
+scgpu_activity(void)
+{
+	return S.commands + S.records;
+}
+
+int
+scgpu_device_tid(void)
+{
+	return S.tid;
+}
+
 static void *
 serve(void *arg)
 {
 	(void)arg;
+	S.tid = gettid();
 	volatile uint32_t *req = (volatile uint32_t *)&S.h->req_seq;
 	uint32_t seen = __atomic_load_n((uint32_t *)(uintptr_t)req, __ATOMIC_ACQUIRE);
 	uint64_t last = now_ns();
@@ -875,6 +893,7 @@ Java_io_github_dylanneve1_iosonpixel_avf_ScgpuNative_start(JNIEnv *env, jclass c
 	__atomic_store_n((uint32_t *)(uintptr_t)&S.h->flags, SCGPU_F_HOST_READY | SCGPU_F_RING | SCGPU_F_RING_CMDS,
 	    __ATOMIC_RELEASE);
 	S.running = 1;
+	vmboost_start();                        /* (before the VM: it notes the newest thread ID) */
 	LOG("SCGPU: gfxstream up, %llu MiB region at guest %#llx, display %dx%d, %s", (unsigned long long)(S.size >> 20),
 	    (unsigned long long)S.guest, fb_w, fb_h, S.bell >= 0 ? "doorbell" : "polling");
 	return 0;
@@ -924,6 +943,7 @@ Java_io_github_dylanneve1_iosonpixel_avf_ScgpuNative_stop(JNIEnv *env, jclass cl
 		return;
 	}
 	Java_io_github_dylanneve1_iosonpixel_avf_ScgpuNative_setWindow(env, cls, NULL, 0, 0);
+	vmboost_stop();
 	S.stop = 1;
 	if (S.bell >= 0) {
 		shutdown(S.bell, SHUT_RDWR);    /* (the thread may be asleep in read on it) */
