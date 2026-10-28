@@ -35,6 +35,9 @@ import java.nio.ByteOrder
  *    renderer this app runs itself (gfxstream, scgpu.c); the guest's frames are shown in an overlay
  *    over the framebuffer's Surface once the guest presents through it. If it can't be set up, the
  *    guest finds no GPU and draws in software.
+ *  - Sound, unless `sound=off` in avf.properties ([sound]): one more region ([Scsnd]) below those, a
+ *    ring the guest's kernel puts iOS's sound into and this app plays through AAudio (scsnd.c). If it
+ *    can't be set up, iOS is silent as before.
  *
  * The Java API never fills those two raw-config fields, so for the one `createVm` call of this
  * run the app wraps the `IVirtualizationService` binder the framework uses (in this process, on
@@ -48,6 +51,7 @@ class ScfbIo(
     private val notice: (String) -> Unit,
     private val camera: CameraSpec? = null,
     private val gpu: Boolean = false,
+    private val sound: Boolean = false,
 ) : AvfIo {
     /**
      * The camera, when the install's Camera setting is on: which cameras the phone has (bit 0 back,
@@ -80,6 +84,10 @@ class ScfbIo(
     private var gpuMap: ByteBuffer? = null
     private var bellOurs: ParcelFileDescriptor? = null
     private var bellTheirs: ParcelFileDescriptor? = null
+    private var sndRegion: Scsnd.Region? = null
+    private var sndShm: SharedMemory? = null
+    private var sndFd: ParcelFileDescriptor? = null
+    private var sndMap: ByteBuffer? = null
 
     private fun fail(reason: String) {
         val text = UNAVAILABLE + reason
@@ -96,6 +104,7 @@ class ScfbIo(
             createRegion(r)
             cam = camera?.let { setupCamera(r, it) }
             gpuRegion = if (gpu) setupGpu(cam?.addr ?: r.addr, r) else null
+            sndRegion = if (sound) setupSound(gpuRegion?.addr ?: cam?.addr ?: r.addr) else null
             val pair = ParcelFileDescriptor.createSocketPair()
             touchOurs = pair[0]
             touchTheirs = pair[1]
@@ -108,7 +117,8 @@ class ScfbIo(
             return
         }
         // Last, so the guest only hears of the region once everything else is in place.
-        if (!(r.params + cam?.params.orEmpty() + gpuRegion?.params.orEmpty()).all { image.call("addParam", it) }) {
+        if (!(r.params + cam?.params.orEmpty() + gpuRegion?.params.orEmpty() + sndRegion?.params.orEmpty())
+                .all { image.call("addParam", it) }) {
             release()
             fail("VirtualMachineCustomImageConfig.Builder.addParam refused the scfb.* arguments")
             return
@@ -119,6 +129,28 @@ class ScfbIo(
             "virtio-input multi-touch")
         cam?.let { log("avf: camera: ${it.size shr 20} MiB region at guest 0x${it.addr.toString(16)}, pictures ${it.width}x${it.height}") }
         gpuRegion?.let { log("avf: gpu: SCGPU, gfxstream in the app, ${it.size shr 20} MiB region at guest 0x${it.addr.toString(16)}, " + (if (bellOurs != null) "doorbell" else "polling")) }
+        sndRegion?.let { log("avf: sound: SCSND, played by the app (AAudio), ${it.size shr 20} MiB region at guest 0x${it.addr.toString(16)}") }
+    }
+
+    /** The sound's region below [belowAddr], made, and the player started on it; null (and why, logged) if it can't be. */
+    private fun setupSound(belowAddr: Long): Scsnd.Region? {
+        val s = Scsnd.region(belowAddr).getOrElse {
+            log("avf: sound off for this run: ${it.message}")
+            return null
+        }
+        return try {
+            val (sm, fd, b) = ashmem("scsnd", s.size)
+            sndShm = sm
+            sndFd = fd
+            sndMap = b
+            val rc = ScsndNative.start(b)
+            if (rc != 0) throw IllegalStateException(ScsndNative.startError(rc))
+            s
+        } catch (e: Exception) {
+            log("avf: sound off for this run: ${describe(e)}")
+            releaseSound(started = false)
+            null
+        }
     }
 
     /** The GPU's region below [belowAddr], made, and the renderer started on it; null (and why, logged) if it can't be. */
@@ -232,6 +264,11 @@ class ScfbIo(
             val (n, failed, busyNs) = ScgpuNative.stats().toList()
             log("avf: gpu: $n commands ($failed failed), %.1f s of them in the renderer".format(busyNs / 1e9))
         }
+        if (sndRegion != null) {
+            val st = ScsndNative.stats()
+            log("avf: sound: %.1f s played in ${st[1]} streams; ${st[4]} underruns, %.2f s skipped, %.2f s dropped%s".format(
+                st[0] / 48000.0, st[2] / 48000.0, st[3] / 48000.0, if (st[5] == 0L) " (the guest never took the region)" else ""))
+        }
         screen = null
         configured = false
         release()
@@ -251,6 +288,17 @@ class ScfbIo(
         gpuRegion = null
     }
 
+    private fun releaseSound(started: Boolean = sndRegion != null) {
+        if (started) runCatching { ScsndNative.stop() }
+        sndMap?.let { runCatching { SharedMemory.unmap(it) } }
+        sndMap = null
+        runCatching { sndFd?.close() }
+        sndFd = null
+        runCatching { sndShm?.close() }
+        sndShm = null
+        sndRegion = null
+    }
+
     private fun releaseCamera() {
         runCatching { camRunner?.close() }
         camRunner = null
@@ -266,6 +314,7 @@ class ScfbIo(
     private fun release() {
         releaseCamera()
         releaseGpu()
+        releaseSound()
         hook?.remove()
         hook = null
         map?.let { runCatching { SharedMemory.unmap(it) } }
@@ -334,14 +383,15 @@ class ScfbIo(
                 // The camera's or the GPU's region too much? The display without them, before nothing at all. (The
                 // guest then finds no header where sccam.addr/scgpu.addr say: plain RAM, all zero, and boots
                 // without a camera, and draws in software.)
-                if (c != null || gpuRegion != null) {
-                    log("avf: virtmgr refused the camera's or the GPU's region (${describe(e)}); trying without them")
+                if (c != null || gpuRegion != null || sndRegion != null) {
+                    log("avf: virtmgr refused the camera's, the GPU's or the sound's region (${describe(e)}); trying without them")
                     val undo2 = runCatching { patch(args[0]!!, withExtras = false) }.getOrNull()
                     if (undo2 != null) {
                         try {
                             return forward(target, m, args).also {
                                 releaseCamera()
                                 releaseGpu()
+                                releaseSound()
                             }
                         } catch (e2: Exception) {
                             undo2()
@@ -384,6 +434,14 @@ class ScfbIo(
                 h.cmbfRangeStart.setLong(gf, g.addr)
                 h.cmbfSize.setLong(gf, g.size)
                 files = append(h.rawFiles.type.componentType!!, files, gf)
+            }
+            val sr = sndRegion
+            if (withExtras && sr != null && sndFd != null) {
+                val sf = h.cmbfNew.newInstance()
+                h.cmbfFile.set(sf, sndFd)
+                h.cmbfRangeStart.setLong(sf, sr.addr)
+                h.cmbfSize.setLong(sf, sr.size)
+                files = append(h.rawFiles.type.componentType!!, files, sf)
             }
             h.rawFiles.set(raw, files)
             var inputs = append(h.rawInputs.type.componentType!!, oldInputs, dev)
