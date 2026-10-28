@@ -39,7 +39,10 @@ class SurfaceScreen(context: Context, private val display: SurfaceDisplay) :
     }
     private val overlayPoll = object : Runnable {
         override fun run() {
-            val want = display.overlayWanted()
+            // (not before the guest's frame size is known: until then both views fill the whole area,
+            // and the renderer's window would be made at that shape -- the picture squashed once the
+            // views take the guest's shape, as after leaving the display and coming back)
+            val want = display.overlayWanted() && fbW > 0
             val visible = overlay.visibility == View.VISIBLE
             if (want != visible) overlay.visibility = if (want) View.VISIBLE else View.GONE
             postDelayed(this, OVERLAY_POLL_MS)
