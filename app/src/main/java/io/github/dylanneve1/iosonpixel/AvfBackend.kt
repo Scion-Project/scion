@@ -115,8 +115,9 @@ class AvfBackend(
                 val camera = if (install.settings.avfCamera) {
                     ScfbIo.CameraSpec(SccamCamera.cameras(app)) { region, log -> SccamCamera(app, region, log).also { it.start() } }
                 } else null
-                // gpu=scgpu: the GPU is this app's (avf/Scgpu.kt), on the display's hook too.
-                ScfbIo(w, h, { VmState.notice(it) }, camera, gpu = AvfLayout(install.dir).scgpu)
+                // gpu=scgpu: the GPU is this app's (avf/Scgpu.kt), on the display's hook too; so is the sound (avf/Scsnd.kt).
+                val layout = AvfLayout(install.dir)
+                ScfbIo(w, h, { VmState.notice(it) }, camera, gpu = layout.scgpu, sound = layout.scsnd)
             } else AvfIo.None
     }
 }
@@ -262,6 +263,12 @@ class AvfLayout(val dir: File) {
 
     /** audio=1: a virtio-snd device for the guest's sound (AvfApi.Spec.audio), played by crosvm through AAudio. */
     val audio: Boolean get() = prop("audio").let { it == "1" || it == "on" }
+
+    /**
+     * The guest's sound played by this app (avf/Scsnd.kt), unless sound=off. Needs the Experimental AVF
+     * display, whose hook lends the region; a guest kernel without SCSND just leaves the region alone.
+     */
+    val scsnd: Boolean get() = prop("sound").let { it != "off" && it != "0" }
 
     data class Disk(val file: File, val writable: Boolean)
 
