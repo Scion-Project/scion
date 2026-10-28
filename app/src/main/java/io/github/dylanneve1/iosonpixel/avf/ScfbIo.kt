@@ -69,6 +69,8 @@ class ScfbIo(
     private var shm: SharedMemory? = null
     private var shmFd: ParcelFileDescriptor? = null
     private var map: ByteBuffer? = null
+    /** The framebuffer's mapping, kept (not unmapped) because a present thread did not stop: unmapped, it read freed memory and the app died. */
+    private var keptMap: ByteBuffer? = null
     private var touchOurs: ParcelFileDescriptor? = null
     private var touchTheirs: ParcelFileDescriptor? = null
     private var hook: Hook? = null
@@ -256,7 +258,11 @@ class ScfbIo(
         hook?.remove()
         hook = null
         screen?.let { s ->
-            s.setSurface(null, null)
+            if (!s.close()) {
+                log("avf: display: the present thread did not stop; the framebuffer stays mapped")
+                keptMap = map
+                map = null
+            }
             s.closeTouch()
             s.stats()?.let { log("avf: display: $it") }
         }
@@ -506,9 +512,12 @@ class ScfbIo(
         /** frames, copy ns, max copy ns, seqlock waits, (unused), torn, partial frames, bytes copied, unchanged frames: scfb_present.c's control block. */
         private val totals = LongArray(9)
 
+        /** Set by [close]: the VM's regions are going, and no present thread may start on them again. */
+        private var closed = false
+
         override fun setSurface(surface: Surface?, onSize: ((Int, Int) -> Unit)?) = synchronized(lock) {
             stopPresenting()
-            if (surface == null) return@synchronized
+            if (surface == null || closed) return@synchronized
             val c = ByteBuffer.allocateDirect(128).order(ByteOrder.LITTLE_ENDIAN)
             control = c
             val sink = SizeSink { w, h -> onSize?.invoke(w, h) }
@@ -522,16 +531,25 @@ class ScfbIo(
             }
         }
 
-        private fun stopPresenting() {
-            val c = control ?: return
+        /** No more presenting, for good (the VM stops): true when no present thread is left reading the framebuffer. */
+        fun close(): Boolean = synchronized(lock) {
+            closed = true
+            stopPresenting()
+        }
+
+        /** True when the present thread has ended (or there was none). */
+        private fun stopPresenting(): Boolean {
+            val c = control ?: return true
             c.putInt(0, 1)
             thread?.join(STOP_TIMEOUT_MS)
+            val ended = thread?.isAlive != true
             for (i in totals.indices) {
                 val v = c.getLong(8 + 8 * i)
                 totals[i] = if (i == 2) maxOf(totals[i], v) else totals[i] + v
             }
             thread = null
             control = null
+            return ended
         }
 
         /** SCGPU: the overlay goes over the framebuffer once the guest shows its frames through the host. */
