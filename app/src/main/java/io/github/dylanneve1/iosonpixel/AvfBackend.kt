@@ -8,6 +8,7 @@ import io.github.dylanneve1.iosonpixel.avf.AvfException
 import io.github.dylanneve1.iosonpixel.avf.AvfIo
 import io.github.dylanneve1.iosonpixel.avf.Scfb
 import io.github.dylanneve1.iosonpixel.avf.SccamCamera
+import io.github.dylanneve1.iosonpixel.avf.ScfbBattery
 import io.github.dylanneve1.iosonpixel.avf.ScfbIo
 import java.io.File
 import java.io.FileWriter
@@ -117,7 +118,8 @@ class AvfBackend(
                 } else null
                 // gpu=scgpu: the GPU is this app's (avf/Scgpu.kt), on the display's hook too; so is the sound (avf/Scsnd.kt).
                 val layout = AvfLayout(install.dir)
-                ScfbIo(w, h, { VmState.notice(it) }, camera, gpu = layout.scgpu, sound = layout.scsnd)
+                ScfbIo(w, h, { VmState.notice(it) }, camera, gpu = layout.scgpu, sound = layout.scsnd,
+                    battery = { region, log -> ScfbBattery(app, region, log).also { it.start() } })
             } else AvfIo.None
     }
 }
