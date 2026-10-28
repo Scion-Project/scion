@@ -16,6 +16,8 @@ data class DisplayPrefs(
     val bar: BarMode = BarMode.AUTO_HIDE,
     /** Pin the display (Android app pinning) while it is open: no home, recents or notification shade. */
     val pin: Boolean = true,
+    /** The iPhone X's rounded screen corners over the guest's picture ([DisplayCorners]). */
+    val corners: Boolean = true,
 ) {
     enum class BarMode(val label: String) {
         ALWAYS("Always"),
@@ -30,6 +32,7 @@ data class DisplayPrefs(
             .putBoolean("snap", snap)
             .putString("bar", bar.name)
             .putBoolean("pin", pin)
+            .putBoolean("corners", corners)
             .apply()
     }
 
@@ -51,6 +54,7 @@ data class DisplayPrefs(
                 snap = p.getBoolean("snap", d.snap),
                 bar = p.getString("bar", null)?.let { n -> BarMode.entries.firstOrNull { it.name == n } } ?: d.bar,
                 pin = p.getBoolean("pin", d.pin),
+                corners = p.getBoolean("corners", d.corners),
             )
         }
     }

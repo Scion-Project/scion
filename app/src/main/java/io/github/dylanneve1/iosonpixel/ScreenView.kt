@@ -22,6 +22,12 @@ class ScreenView(context: Context) : View(context), VmDisplay.Listener {
     var onDisconnect: ((Throwable?) -> Unit)? = null
     val edge = EdgeInput(this)
     /** Black border (px) the guest image is inset by; touches there go to [edge]. */
+    /** The iPhone X's rounded corners over the picture ([DisplayCorners]). */
+    var rounded = false
+        set(value) { if (field != value) { field = value; invalidate() } }
+    private val cornerPath = android.graphics.Path()
+    private val cornerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK }
+
     var border = 0
         set(value) { if (field != value) { field = value; invalidate() } }
 
@@ -72,6 +78,9 @@ class ScreenView(context: Context) : View(context), VmDisplay.Listener {
             }
             computeDest()
             canvas.drawBitmap(bmp, null, dest, paint)
+            if (rounded) {
+                canvas.drawPath(DisplayCorners.mask(dest.left.toFloat(), dest.top.toFloat(), dest.width().toFloat(), dest.height().toFloat(), cornerPath), cornerPaint)
+            }
         }
     }
 
