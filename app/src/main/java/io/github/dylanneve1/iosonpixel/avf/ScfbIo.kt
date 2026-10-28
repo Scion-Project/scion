@@ -52,6 +52,8 @@ class ScfbIo(
     private val camera: CameraSpec? = null,
     private val gpu: Boolean = false,
     private val sound: Boolean = false,
+    /** What feeds the guest the phone's battery once the VM runs ([ScfbBattery]), given the framebuffer's header page. */
+    private val battery: ((ByteBuffer, (String) -> Unit) -> AutoCloseable)? = null,
 ) : AvfIo {
     /**
      * The camera, when the install's Camera setting is on: which cameras the phone has (bit 0 back,
@@ -251,6 +253,15 @@ class ScfbIo(
                 null
             }
         }
+        val m = map
+        if (battery != null && m != null) {
+            batRunner = try {
+                battery.invoke(m, log)
+            } catch (e: Exception) {
+                log("avf: battery: couldn't start: ${describe(e)}")
+                null
+            }
+        }
         return ScfbScreen().also { screen = it }
     }
 
@@ -317,7 +328,11 @@ class ScfbIo(
         cam = null
     }
 
+    private var batRunner: AutoCloseable? = null
+
     private fun release() {
+        runCatching { batRunner?.close() }
+        batRunner = null
         releaseCamera()
         releaseGpu()
         releaseSound()
