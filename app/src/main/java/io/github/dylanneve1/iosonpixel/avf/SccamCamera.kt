@@ -14,6 +14,7 @@ import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.media.Image
 import android.media.ImageReader
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
@@ -65,6 +66,10 @@ class SccamCamera(
     private var lastAck = -1
     private var saidDenied = false
     private var lastFail: String? = null
+    private var torchLevel = 0              // what iOS asks for (Sccam.OFF_TORCH), 0 to 1000
+    private var torchApplied = -1           // what the phone's torch was last set to (-1: not known)
+    private var torchRetryAt = 0L           // (after a failure: the torch busy, another app's camera)
+    private var repeating: CaptureRequest.Builder? = null
 
     private val poll = object : Runnable {
         override fun run() {
@@ -90,6 +95,12 @@ class SccamCamera(
             cameras == 0 -> Sccam.FLAG_NO_CAMERA
             else -> Sccam.FLAG_READY
         })
+        val torch = b.getInt(Sccam.OFF_TORCH).coerceIn(0, 1000)
+        if (torch != torchLevel) {
+            torchLevel = torch
+            log("avf: camera: iOS's flashlight ${if (torch > 0) "on ($torch of 1000)" else "off"}")
+        }
+        if (torchLevel != torchApplied && now >= torchRetryAt) applyTorch()
         val req = Sccam.request(region)
         if (req.seq != lastAck) {
             lastAck = req.seq
@@ -188,7 +199,13 @@ class SccamCamera(
                         set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
                         set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                         set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(15, 30))
+                        if (openFacing == Sccam.FACING_BACK) {
+                            set(CaptureRequest.FLASH_MODE,
+                                if (torchLevel > 0) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
+                        }
                     }
+                    repeating = rq
+                    if (openFacing == Sccam.FACING_BACK) torchApplied = torchLevel
                     s.setRepeatingRequest(rq.build(), null, handler)
                     opening = false
                     b.putInt(Sccam.OFF_HOST_STATE, Sccam.STATE_STREAMING)
@@ -243,7 +260,42 @@ class SccamCamera(
         closeDevice()
     }
 
+    /*
+     * iOS's flashlight on the phone's torch: the flash of the capture iOS has from the back camera
+     * while there is one (the torch can't be had apart from it then), CameraManager's torch otherwise
+     * -- at a strength by iOS's level where the phone has them (Android 13).
+     */
+    private fun applyTorch() {
+        val id = cameraId(Sccam.FACING_BACK) ?: return
+        val s = session
+        val rq = repeating
+        if (device != null && openFacing == Sccam.FACING_BACK) {
+            if (s == null || rq == null) return     // (the session's start sets it)
+            rq.set(CaptureRequest.FLASH_MODE, if (torchLevel > 0) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
+            runCatching { s.setRepeatingRequest(rq.build(), null, handler) }
+                .onFailure { log("avf: camera: the flash: ${it.message}") }
+            torchApplied = torchLevel
+            return
+        }
+        val ok = runCatching {
+            val max = if (Build.VERSION.SDK_INT >= 33)
+                manager.getCameraCharacteristics(id).get(CameraCharacteristics.FLASH_INFO_STRENGTH_MAXIMUM_LEVEL) ?: 1 else 1
+            when {
+                torchLevel == 0 -> manager.setTorchMode(id, false)
+                max > 1 && Build.VERSION.SDK_INT >= 33 ->
+                    manager.turnOnTorchWithStrengthLevel(id, ((torchLevel * max + 999) / 1000).coerceIn(1, max))
+                else -> manager.setTorchMode(id, true)
+            }
+        }.onFailure {
+            log("avf: camera: the torch: ${it.message}")
+            torchRetryAt = SystemClock.elapsedRealtime() + RETRY_MS
+        }.isSuccess
+        if (ok) torchApplied = torchLevel
+    }
+
     private fun closeDevice() {
+        repeating = null
+        if (openFacing == Sccam.FACING_BACK) torchApplied = -1      // (CameraManager's torch from here on)
         runCatching { session?.close() }
         runCatching { device?.close() }
         runCatching { reader?.close() }
@@ -262,6 +314,10 @@ class SccamCamera(
         val done = CountDownLatch(1)
         handler.post {
             if (device != null || opening) close("the VM stopped")
+            if (torchLevel > 0 || torchApplied > 0) {
+                torchLevel = 0
+                applyTorch()
+            }
             b.putInt(Sccam.OFF_HOST_FLAGS, 0)
             b.putInt(Sccam.OFF_HOST_STATE, Sccam.STATE_IDLE)
             done.countDown()

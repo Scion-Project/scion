@@ -50,6 +50,8 @@ object Sccam {
     const val OFF_REQ_FPS = 0x54
     const val OFF_GUEST_READING = 0x58
     const val OFF_GUEST_NS = 0x60
+    /** The guest's: iOS's flashlight, 0 (off) to 1000 (brightest) (patch 1402, /dev/hakios-torch). */
+    const val OFF_TORCH = 0x68
     const val OFF_SLOTS = 0x100
     const val SLOT_DESC = 64
 
