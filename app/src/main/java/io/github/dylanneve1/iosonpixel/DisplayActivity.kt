@@ -197,6 +197,8 @@ class DisplayActivity : Activity() {
         }
         screen.border = border
         surfaceScreen?.border = border
+        screen.rounded = prefs.corners
+        surfaceScreen?.rounded = prefs.corners
         for (edge in listOfNotNull(screen.edge, surfaceScreen?.edge)) {
             edge.snap = prefs.snap
             edge.snapPx = ui.dp(DisplayPrefs.SNAP_DP).toFloat()

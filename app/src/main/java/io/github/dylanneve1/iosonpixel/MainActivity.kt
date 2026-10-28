@@ -674,6 +674,12 @@ class MainActivity : Activity() {
                 "bar, or Android's unpin gesture (swipe up and hold).", p.pin,
         )
         pin.setOnCheckedChangeListener { _, on -> save(p.copy(pin = on)) }
+        val corners = switch(
+            card, "Rounded screen corners",
+            "The iPhone X's: iOS lays itself out for a screen whose corners are rounded (39 pt), and on a " +
+                "square one some of it sits oddly near the corners.", p.corners,
+        )
+        corners.setOnCheckedChangeListener { _, on -> save(p.copy(corners = on)) }
 
         card.addView(ui.text(14f, Ui.TEXT, bold = true).apply { text = "Hardware buttons bar" }, ui.lp(top = 20))
         val group = RadioGroup(this).also { card.addView(it, ui.lp(top = 4)) }
