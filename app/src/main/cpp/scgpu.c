@@ -169,6 +169,7 @@ static struct {
 	uint64_t rings_in, rings_out, sleeps;
 	uint64_t records, record_bytes;
 	uint64_t ring_commands;                 /* commands run from the ring (SCGPU_REC_CMD) */
+	uint64_t ring_uploads;                  /* ... of which uploads */
 } S = { .window_lock = PTHREAD_MUTEX_INITIALIZER, .bell = -1 };
 
 #define SPIN_NS                 200000u         /* after a command, look for the next this long, then sleep */
@@ -322,15 +323,18 @@ fence_cb(void *user, struct sr_fence *f)
 	(void)f;
 }
 
-/* One command (from the mailbox, or the ring); its reply into resp. Returns the reply's length. */
+/*
+ * One command (from the mailbox, or the ring: then up to `max` bytes, an upload's rows in it); its
+ * reply into resp. Returns the reply's length.
+ */
 static uint32_t
-handle_cmd(const uint8_t *cmd, uint32_t len, uint8_t *resp)
+handle_cmd(const uint8_t *cmd, uint32_t len, uint32_t max, uint8_t *resp)
 {
 	struct hdr in, out;
 	uint32_t resp_len = sizeof(out);
 	int err = 0;
 
-	if (len < sizeof(in) || len > SCGPU_CMD_MAX) {
+	if (len < sizeof(in) || len > max) {
 		memset(&in, 0, sizeof(in));
 		err = -EINVAL;
 		goto reply;
@@ -484,7 +488,9 @@ handle_cmd(const uint8_t *cmd, uint32_t len, uint8_t *resp)
 		struct box b;
 		NEED(c);
 		memcpy(&c, cmd, sizeof(c));
-		void *stage = at(c.staging, c.staging_len);
+		/* (staging 0: an upload from the ring, its rows right after the command) */
+		void *stage = c.staging != 0 ? at(c.staging, c.staging_len) :
+		    c.to_host && c.staging_len <= len - sizeof(c) ? (void *)(cmd + sizeof(c)) : NULL;
 		if (stage == NULL || c.w == 0 || c.h == 0) {
 			err = -EFAULT;
 			break;
@@ -535,7 +541,7 @@ reply:
 static uint32_t
 handle(uint32_t len)
 {
-	return handle_cmd(S.base + SCGPU_CMD_OFF, len, S.base + SCGPU_RESP_OFF);
+	return handle_cmd(S.base + SCGPU_CMD_OFF, len, SCGPU_CMD_MAX, S.base + SCGPU_RESP_OFF);
 }
 
 /*
@@ -545,25 +551,42 @@ handle(uint32_t len)
 static void
 ring_command(const uint8_t *ring, uint32_t size, uint32_t at, uint32_t len)
 {
-	static uint8_t cmd[SCGPU_CMD_MAX], resp[SCGPU_RESP_MAX];
+	static uint8_t *wrapped, resp[SCGPU_RESP_MAX];
+	static uint32_t wrapped_cap;
+	const uint8_t *cmd = ring + at;
 	struct hdr h;
 
-	if (len < sizeof(h) || len > sizeof(cmd)) {
+	if (len < sizeof(h) || len > size / 2) {
 		S.errors++;
 		ERR("stream ring: a command of %u bytes", len);
 		return;
 	}
-	uint32_t first = len < size - at ? len : size - at;
-	memcpy(cmd, ring + at, first);
-	memcpy(cmd + first, ring, len - first);
+	if (len > size - at) {
+		/* (it goes round the ring's end: in one piece here) */
+		if (len > wrapped_cap) {
+			uint8_t *b = realloc(wrapped, len);
+			if (b == NULL) {
+				S.errors++;
+				return;
+			}
+			wrapped = b;
+			wrapped_cap = len;
+		}
+		memcpy(wrapped, ring + at, size - at);
+		memcpy(wrapped + (size - at), ring, len - (size - at));
+		cmd = wrapped;
+	}
 	memcpy(&h, cmd, sizeof(h));
 	switch (h.type) {
+	case SCGPU_CMD_TRANSFER:                /* (an upload: staging 0, the rows follow) */
+		S.ring_uploads++;
+		/* fall through */
 	case CMD_RESOURCE_CREATE_3D:
 	case CMD_RESOURCE_ATTACH_BACKING:
 	case CMD_CTX_ATTACH_RESOURCE:
 	case CMD_CTX_DETACH_RESOURCE:
 	case CMD_RESOURCE_UNREF:
-		handle_cmd(cmd, len, resp);
+		handle_cmd(cmd, len, len, resp);
 		S.ring_commands++;
 		break;
 	default:
@@ -659,7 +682,7 @@ ring_guest(void)
 static void
 report(uint64_t now)
 {
-	static uint64_t at, commands, busy, rings_in, rings_out, sleeps, records, record_bytes, ring_commands;
+	static uint64_t at, commands, busy, rings_in, rings_out, sleeps, records, record_bytes, ring_commands, ring_uploads;
 
 	if (at == 0) {
 		at = now;
@@ -669,9 +692,9 @@ report(uint64_t now)
 	}
 	double secs = (now - at) / 1e9;
 	if (S.commands != commands || S.records != records) {
-		LOG("SCGPU: %.0f commands/s (%.0f more from the ring), %.0f stream records/s (%.1f MB/s), %.1f%% of the time in "
-		    "them; %.0f sleeps/s, rung %.0f/s, rang %.0f/s%s", (S.commands - commands) / secs,
-		    (S.ring_commands - ring_commands) / secs, (S.records - records) / secs,
+		LOG("SCGPU: %.0f commands/s (%.0f more from the ring, %.0f of them uploads), %.0f stream records/s (%.1f MB/s), "
+		    "%.1f%% of the time in them; %.0f sleeps/s, rung %.0f/s, rang %.0f/s%s", (S.commands - commands) / secs,
+		    (S.ring_commands - ring_commands) / secs, (S.ring_uploads - ring_uploads) / secs, (S.records - records) / secs,
 		    (S.record_bytes - record_bytes) / 1e6 / secs, (S.busy_ns - busy) / 1e7 / secs, (S.sleeps - sleeps) / secs,
 		    (S.rings_in - rings_in) / secs, (S.rings_out - rings_out) / secs, S.bell < 0 ? " (polling)" : "");
 	}
@@ -694,6 +717,7 @@ report(uint64_t now)
 	records = S.records;
 	record_bytes = S.record_bytes;
 	ring_commands = S.ring_commands;
+	ring_uploads = S.ring_uploads;
 }
 
 static void *
