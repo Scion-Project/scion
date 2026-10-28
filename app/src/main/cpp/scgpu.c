@@ -44,6 +44,9 @@
 #define SCGPU_POOL_OFF          0x20000u
 #define SCGPU_F_HOST_READY      (1u << 0)
 #define SCGPU_F_RING            (1u << 1)
+#define SCGPU_F_RING_CMDS       (1u << 2)
+#define SCGPU_REC_STREAM        0u
+#define SCGPU_REC_CMD           1u
 #define SCGPU_G_PRESENTING      (1u << 0)
 #define SCGPU_CMD_TRANSFER      0x0f00u
 
@@ -62,8 +65,8 @@ struct scgpu_header {
 	uint32_t reserved[9];
 };
 
-/* a record of the stream ring: the bytes follow, then padding to 16 */
-struct scgpu_record { uint32_t resource_id, ctx_id, len, reserved; };
+/* a record of the stream ring: the bytes follow, then padding to 16; kind SCGPU_REC_CMD: a command */
+struct scgpu_record { uint32_t resource_id, ctx_id, len, kind; };
 
 struct scgpu_transfer {
 	uint32_t type, flags;
@@ -165,6 +168,7 @@ static struct {
 	int bell;                       /* the doorbell's socket, or -1: polling */
 	uint64_t rings_in, rings_out, sleeps;
 	uint64_t records, record_bytes;
+	uint64_t ring_commands;                 /* commands run from the ring (SCGPU_REC_CMD) */
 } S = { .window_lock = PTHREAD_MUTEX_INITIALIZER, .bell = -1 };
 
 #define SPIN_NS                 200000u         /* after a command, look for the next this long, then sleep */
@@ -318,12 +322,10 @@ fence_cb(void *user, struct sr_fence *f)
 	(void)f;
 }
 
-/* One command from the mailbox; the reply goes where the guest takes it. Returns the reply's length. */
+/* One command (from the mailbox, or the ring); its reply into resp. Returns the reply's length. */
 static uint32_t
-handle(uint32_t len)
+handle_cmd(const uint8_t *cmd, uint32_t len, uint8_t *resp)
 {
-	const uint8_t *cmd = S.base + SCGPU_CMD_OFF;
-	uint8_t *resp = S.base + SCGPU_RESP_OFF;
 	struct hdr in, out;
 	uint32_t resp_len = sizeof(out);
 	int err = 0;
@@ -529,6 +531,50 @@ reply:
 	return resp_len;
 }
 
+/* One command from the mailbox; the reply goes where the guest takes it. */
+static uint32_t
+handle(uint32_t len)
+{
+	return handle_cmd(S.base + SCGPU_CMD_OFF, len, S.base + SCGPU_RESP_OFF);
+}
+
+/*
+ * A command from the ring (SCGPU_REC_CMD): one whose reply nothing waits for, run here in order with
+ * the stream; a failure is only logged (handle_cmd does).
+ */
+static void
+ring_command(const uint8_t *ring, uint32_t size, uint32_t at, uint32_t len)
+{
+	static uint8_t cmd[SCGPU_CMD_MAX], resp[SCGPU_RESP_MAX];
+	struct hdr h;
+
+	if (len < sizeof(h) || len > sizeof(cmd)) {
+		S.errors++;
+		ERR("stream ring: a command of %u bytes", len);
+		return;
+	}
+	uint32_t first = len < size - at ? len : size - at;
+	memcpy(cmd, ring + at, first);
+	memcpy(cmd + first, ring, len - first);
+	memcpy(&h, cmd, sizeof(h));
+	switch (h.type) {
+	case CMD_RESOURCE_CREATE_3D:
+	case CMD_RESOURCE_ATTACH_BACKING:
+	case CMD_CTX_ATTACH_RESOURCE:
+	case CMD_CTX_DETACH_RESOURCE:
+	case CMD_RESOURCE_UNREF:
+		handle_cmd(cmd, len, resp);
+		S.ring_commands++;
+		break;
+	default:
+		S.errors++;
+		if (S.errors <= 16) {
+			ERR("stream ring: command %#x is not one to run from the ring", h.type);
+		}
+		break;
+	}
+}
+
 static void ring_guest(void);
 
 /*
@@ -557,6 +603,14 @@ drain(void)
 			break;
 		}
 		uint32_t at = (pos + (uint32_t)sizeof(r)) & (size - 1);
+		if (r.kind == SCGPU_REC_CMD) {
+			ring_command(ring, size, at, r.len);
+			tail += (uint32_t)sizeof(r) + ((r.len + 15) & ~15u);
+			__atomic_store_n((uint32_t *)(uintptr_t)&S.h->ring_tail, tail, __ATOMIC_RELEASE);
+			any = 1;
+			head = __atomic_load_n((uint32_t *)(uintptr_t)&S.h->ring_head, __ATOMIC_ACQUIRE);
+			continue;
+		}
 		uint32_t first = r.len < size - at ? r.len : size - at;
 		struct iovec iov[2] = { { ring + at, first }, { ring, r.len - first } };
 		if (O.on) {
@@ -605,7 +659,7 @@ ring_guest(void)
 static void
 report(uint64_t now)
 {
-	static uint64_t at, commands, busy, rings_in, rings_out, sleeps, records, record_bytes;
+	static uint64_t at, commands, busy, rings_in, rings_out, sleeps, records, record_bytes, ring_commands;
 
 	if (at == 0) {
 		at = now;
@@ -615,8 +669,9 @@ report(uint64_t now)
 	}
 	double secs = (now - at) / 1e9;
 	if (S.commands != commands || S.records != records) {
-		LOG("SCGPU: %.0f commands/s, %.0f stream records/s (%.1f MB/s), %.1f%% of the time in them; %.0f sleeps/s, "
-		    "rung %.0f/s, rang %.0f/s%s", (S.commands - commands) / secs, (S.records - records) / secs,
+		LOG("SCGPU: %.0f commands/s (%.0f more from the ring), %.0f stream records/s (%.1f MB/s), %.1f%% of the time in "
+		    "them; %.0f sleeps/s, rung %.0f/s, rang %.0f/s%s", (S.commands - commands) / secs,
+		    (S.ring_commands - ring_commands) / secs, (S.records - records) / secs,
 		    (S.record_bytes - record_bytes) / 1e6 / secs, (S.busy_ns - busy) / 1e7 / secs, (S.sleeps - sleeps) / secs,
 		    (S.rings_in - rings_in) / secs, (S.rings_out - rings_out) / secs, S.bell < 0 ? " (polling)" : "");
 	}
@@ -638,6 +693,7 @@ report(uint64_t now)
 	sleeps = S.sleeps;
 	records = S.records;
 	record_bytes = S.record_bytes;
+	ring_commands = S.ring_commands;
 }
 
 static void *
@@ -792,7 +848,8 @@ Java_io_github_dylanneve1_iosonpixel_avf_ScgpuNative_start(JNIEnv *env, jclass c
 		return -5;
 	}
 	pthread_setname_np(S.thread, "scgpu");
-	__atomic_store_n((uint32_t *)(uintptr_t)&S.h->flags, SCGPU_F_HOST_READY | SCGPU_F_RING, __ATOMIC_RELEASE);
+	__atomic_store_n((uint32_t *)(uintptr_t)&S.h->flags, SCGPU_F_HOST_READY | SCGPU_F_RING | SCGPU_F_RING_CMDS,
+	    __ATOMIC_RELEASE);
 	S.running = 1;
 	LOG("SCGPU: gfxstream up, %llu MiB region at guest %#llx, display %dx%d, %s", (unsigned long long)(S.size >> 20),
 	    (unsigned long long)S.guest, fb_w, fb_h, S.bell >= 0 ? "doorbell" : "polling");
