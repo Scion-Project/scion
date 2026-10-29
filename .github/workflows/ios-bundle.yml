@@ -1,0 +1,302 @@
+# Scion with iOS 16.5 ready to install, built from nothing (Actions > ios-bundle > Run workflow).
+#
+#   apk     (macOS, as release.yaml) the app: app-debug.apk. Our own code and QEMU, no Apple file: passed on as an
+#           ordinary artifact, kept for a day.
+#   bundle  (Ubuntu, everything big on /mnt):
+#             1. iOS 16.5 (20F66) for iPhone10,3 from Apple's CDN, checked by size and hash, unpacked
+#                (Scion-Project/hackios-xnu-kernel sysimage/unpack.sh), and the iPhone identity;
+#             2. the AVF guest: the kernel (every driver's default), avfboot (avf/shim) and the
+#                small root and the system image (userland/build.sh GL=gfx REST=1), the payload;
+#             3. one 7z archive, AES-256 with its file names hidden: the APK, the VM's files (vm/), install.sh
+#                (tools/install-ios-bundle.sh: adb, run-as, register) and a README.
+#
+# The bundle carries iOS's own files, and any signed-in GitHub user can download a public repository's
+# artifacts. So nothing with Apple's files is uploaded except that encrypted archive, under the passphrase of the
+# repository secret INSTALLER_PASSPHRASE. The job stops early when the secret is missing, and before uploading it
+# decrypts its own archive and checks every file. The bundle is kept for 3 days.
+name: ios-bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_ref:
+        description: Scion-Project/hackios-xnu-kernel branch, tag or commit
+        default: main
+      params:
+        description: Extra boot-arguments appended to avf.properties' params (optional)
+        default: ""
+
+concurrency:
+  group: ios-bundle
+  cancel-in-progress: false
+
+env:
+  ANDROID_NDK_VERSION: "28.2.13676358"
+  ANDROID_PLATFORM: "platforms;android-36"
+  ANDROID_BUILD_TOOLS: "build-tools;36.0.0"
+
+jobs:
+  apk:
+    runs-on: macos-14
+    timeout-minutes: 150
+    steps:
+      - name: The passphrase is set (checked here too, before an hour of building)
+        env:
+          PASS: ${{ secrets.INSTALLER_PASSPHRASE }}
+        run: |
+          [ -n "$PASS" ] || { echo "::error::set the repository secret INSTALLER_PASSPHRASE"; exit 1; }
+
+      - name: Checkout (with the Inferno submodule)
+        uses: actions/checkout@v4.2.2
+        with:
+          submodules: true
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4.7.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3.2.2
+        with:
+          packages: platform-tools
+
+      - name: Install NDK r28 + platform + build-tools
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "ndk;${ANDROID_NDK_VERSION}" "$ANDROID_PLATFORM" "$ANDROID_BUILD_TOOLS" "platform-tools"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Ensure Rosetta 2 (NDK toolchain is darwin-x86_64)
+        run: softwareupdate --install-rosetta --agree-to-license || true
+
+      - name: Install host build tools (Homebrew)
+        run: brew install meson ninja pkgconf cmake
+
+      - name: Point Gradle at the SDK
+        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+
+      - name: Cache dependency tarballs
+        uses: actions/cache@v4.2.0
+        with:
+          path: native/build/dl
+          key: deps-dl-${{ runner.os }}-${{ hashFiles('native/build-android.sh') }}
+
+      - name: Cache static sysroot
+        id: sysroot-cache
+        uses: actions/cache@v4.2.0
+        with:
+          path: native/build/sysroot
+          key: deps-sysroot-${{ runner.os }}-${{ hashFiles('native/build-android.sh') }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4.2.2
+
+      - name: Build static deps (skipped on sysroot cache hit)
+        if: steps.sysroot-cache.outputs.cache-hit != 'true'
+        run: native/build-android.sh deps
+
+      - name: Build QEMU (cross-build)
+        run: native/build-android.sh qemu
+
+      - name: Assemble debug APK
+        run: ./gradlew --no-daemon assembleDebug
+
+      - uses: actions/upload-artifact@v4.6.0
+        with:
+          name: scion-apk-for-bundle
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  bundle:
+    needs: apk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    env:
+      W: /mnt/w
+      THEOS: /mnt/w/theos
+      TOOLCHAIN_URL: https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz
+      SDKS_REPO: https://github.com/theos/sdks.git
+      SEVENZIP_URL: https://github.com/ip7z/7zip/releases/download/24.08/7z2408-linux-x64.tar.xz
+      IPSW_DEVICE: iPhone10,3
+      IPSW_BUILD: 20F66
+      IPSW_SIZE: "6165698198"
+    steps:
+      - name: The passphrase is set
+        env:
+          PASS: ${{ secrets.INSTALLER_PASSPHRASE }}
+        run: |
+          [ -n "$PASS" ] || { echo "::error::set the repository secret INSTALLER_PASSPHRASE: the bundle is never uploaded unencrypted"; exit 1; }
+
+      - uses: actions/checkout@v4.2.2
+
+      - name: Work space on /mnt
+        run: |
+          sudo mkdir -p "$W/bin" && sudo chown -R "$(id -u):$(id -g)" "$W"
+          echo "$W/bin" >> "$GITHUB_PATH"
+          df -h / /mnt
+
+      - name: Host packages, and 7-Zip 24 (unpack.sh reads APFS with it)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends build-essential git curl clang lld \
+            python3 python3-venv perl xz-utils flex bison m4 autoconf automake libtool-bin uuid-dev llvm \
+            meson ninja-build pkg-config
+          curl -L --fail --retry 3 -s "$SEVENZIP_URL" | tar -xJ -C "$W/bin" 7zz
+          ln -sf 7zz "$W/bin/7z"
+          7z i | sed -n 2p
+
+      - name: The kernel repository
+        env:
+          KERNEL_REF: ${{ inputs.kernel_ref }}
+        run: |
+          git clone -q --filter=blob:none https://github.com/Scion-Project/hackios-xnu-kernel.git "$W/k"
+          git -C "$W/k" checkout -q "$KERNEL_REF"
+          echo "$W/k: $(git -C "$W/k" log --oneline -1)"
+          echo "DEPS_KEY=$(sha256sum "$W/k/xnu-deps/setup.sh" | cut -c1-16)" >> "$GITHUB_ENV"
+
+      - name: Cache the theos toolchain and SDK
+        id: theos-cache
+        uses: actions/cache@v4
+        with:
+          path: /mnt/w/theos
+          key: theos-iOSToolchain-x86_64-iPhoneOS16.5-v1
+
+      - name: theos (toolchain and iPhoneOS16.5.sdk)
+        if: steps.theos-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$THEOS/toolchain/linux/iphone" "$THEOS/sdks"
+          mkdir -p "$W/tc" && curl -L --fail --retry 3 -s "$TOOLCHAIN_URL" | tar -xJ -C "$W/tc"
+          LD=$(find "$W/tc" -path '*/bin/ld' \( -type f -o -type l \) | head -1)
+          test -n "$LD" || { find "$W/tc" -maxdepth 4 | head -50; exit 1; }
+          rm -rf "$THEOS/toolchain/linux/iphone" && mv "$(dirname "$(dirname "$LD")")" "$THEOS/toolchain/linux/iphone"
+          rm -rf "$W/tc"
+          git init -q "$W/sdks" && git -C "$W/sdks" remote add origin "$SDKS_REPO"
+          git -C "$W/sdks" sparse-checkout set iPhoneOS16.5.sdk
+          git -C "$W/sdks" fetch -q --depth 1 --filter=blob:none origin HEAD && git -C "$W/sdks" checkout -q FETCH_HEAD
+          mv "$W/sdks/iPhoneOS16.5.sdk" "$THEOS/sdks/" && rm -rf "$W/sdks"
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include"
+
+      - name: Cache xnu-deps' sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            /mnt/w/k/xnu-deps/AvailabilityVersions
+            /mnt/w/k/xnu-deps/libdispatch
+            /mnt/w/k/xnu-deps/libpthread
+            /mnt/w/k/xnu-deps/mm_bootstrap_cmds
+            /mnt/w/k/xnu-deps/tcsh
+            /mnt/w/k/xnu-deps/unifdef
+            /mnt/w/k/xnu-deps/MacOSX13.3.sdk
+          key: xnu-deps-src-${{ env.DEPS_KEY }}
+
+      - name: The kernel tree and the dependencies (no .config, so every driver's default, as the AVF guest has)
+        working-directory: /mnt/w/k
+        run: |
+          xnu/apply.sh
+          xnu-deps/setup.sh || { for f in xnu-deps/*.log; do echo "== $f"; tail -60 "$f"; done; exit 1; }
+
+      - name: iOS 16.5 (20F66) for iPhone10,3, from Apple
+        run: |
+          curl -s --fail --retry 3 "https://api.ipsw.me/v4/ipsw/$IPSW_DEVICE/$IPSW_BUILD" > "$W/ipsw.json"
+          URL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["url"])' "$W/ipsw.json")
+          SHA1=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("sha1sum",""))' "$W/ipsw.json")
+          echo "IPSW: $URL"
+          curl -L --fail --retry 5 -s -o "$W/ios.ipsw" "$URL"
+          size=$(stat -c %s "$W/ios.ipsw")
+          [ "$size" = "$IPSW_SIZE" ] || { echo "::error::the IPSW is $size bytes, not $IPSW_SIZE"; exit 1; }
+          if [ -n "$SHA1" ]; then
+            got=$(sha1sum "$W/ios.ipsw" | cut -d' ' -f1)
+            [ "$got" = "$SHA1" ] || { echo "::error::the IPSW's sha1 is $got, not $SHA1"; exit 1; }
+          fi
+          echo "IPSW checked: $size bytes${SHA1:+, sha1 $SHA1}"
+
+      - name: Unpack the IPSW, then the iPhone identity
+        working-directory: /mnt/w/k
+        run: |
+          sysimage/unpack.sh "$W/ios.ipsw"
+          xnuloader/mkidentity.sh
+          rm -f "$W/ios.ipsw"
+
+      - name: The kernel
+        working-directory: /mnt/w/k
+        run: |
+          make kernel JOBS=$(nproc) > "$W/kernel.log" 2>&1 || { tail -80 "$W/kernel.log"; exit 1; }
+          K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          ls -la "$K"
+          echo "KERNEL=$W/k/$K" >> "$GITHUB_ENV"
+
+      - name: avfboot (avf/shim, with the identity)
+        working-directory: /mnt/w/k
+        run: avf/shim/build.sh && ls -la avf/shim/out/Image
+
+      - name: The small root and the system image (userland/build.sh GL=gfx REST=1)
+        working-directory: /mnt/w/k
+        run: |
+          (source ./xnu-env.sh && cd userland && GL=gfx REST=1 bash build.sh) > "$W/userland.log" 2>&1 ||
+            { tail -100 "$W/userland.log"; exit 1; }
+          tail -5 "$W/userland.log"
+          ls -la userland/root.apfs userland/system.apfs
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: scion-apk-for-bundle
+          path: /mnt/w/apk
+
+      - name: The bundle (the APK, vm/, install.sh, README), encrypted, and checked
+        env:
+          PASS: ${{ secrets.INSTALLER_PASSPHRASE }}
+          PARAMS: ${{ inputs.params }}
+        run: |
+          B="$W/scion-ios-bundle" && mkdir -p "$B/vm"
+          cp "$W/apk/app-debug.apk" "$B/scion.apk"
+          python3 "$W/k/xnuloader/mkpayload.py" -o "$B/vm/payload.bin" kernel="$KERNEL" ramdisk="$W/k/userland/root.apfs" > /dev/null
+          cp "$W/k/avf/shim/out/Image" "$B/vm/Image"
+          mv "$W/k/userland/system.apfs" "$B/vm/system.apfs"
+          cp "$W/k/avf/scion/avf.properties" "$B/vm/avf.properties"
+          if [ -n "$PARAMS" ]; then sed -i "s|^params=\(.*\)$|params=\1 $PARAMS|" "$B/vm/avf.properties"; fi
+          cp "$W/k/avf/scion/register-install.py" "$B/"
+          cp tools/install-ios-bundle.sh "$B/install.sh" && chmod +x "$B/install.sh"
+          cat > "$B/README.txt" <<EOF
+          Scion with iOS 16.5 (AVF), built $(date -u +%Y-%m-%d) by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          app ${GITHUB_SHA::7}, kernel repo $(git -C "$W/k" rev-parse --short HEAD)
+
+          For a Pixel with pKVM (Pixel 8 or newer), USB debugging on, and adb and python3 on the computer:
+            1. Open Scion once on the phone if it is already installed (so it has its list of installs).
+            2. ./install.sh            (or ./install.sh SERIAL with several phones attached)
+               It installs or updates the app (keeping its data), grants the VM permissions, sets the custom-VM
+               setting, copies vm/ into the app (files/ios165) and registers it as "iOS 16.5 (AVF)".
+               It never touches another VM's folder.
+            3. In Scion: pick "iOS 16.5 (AVF)", press Start.
+          The files can also be used by hand: scion.apk is the app, vm/ the VM folder (avf.properties describes it).
+          EOF
+          (cd "$B" && find . -type f ! -name SHA256SUMS | sort | xargs sha256sum > SHA256SUMS)
+          A="$W/upload/scion-ios-bundle.7z" && mkdir -p "$W/upload"
+          (cd "$W" && 7z a -t7z -mx=0 -mhe=on -p"$PASS" "$A" scion-ios-bundle > /dev/null)
+          7z t -p"$PASS" "$A" > /dev/null
+          rm -rf "$W/check" && mkdir "$W/check"
+          7z x -p"$PASS" -o"$W/check" "$A" > /dev/null
+          (cd "$W/check/scion-ios-bundle" && sha256sum -c --quiet SHA256SUMS) || { echo "::error::the archive does not hold the bundle"; exit 1; }
+          rm -rf "$W/check" "$B"
+          ls -la "$A"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scion-ios-bundle
+          path: /mnt/w/upload/scion-ios-bundle.7z
+          compression-level: 0
+          retention-days: 3
+
+      - name: Build logs (no Apple files in them)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-bundle-logs
+          path: |
+            /mnt/w/kernel.log
+            /mnt/w/userland.log
+            /mnt/w/k/xnu-deps/*.log
+          retention-days: 7
+          if-no-files-found: ignore
