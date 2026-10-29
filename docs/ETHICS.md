@@ -23,7 +23,10 @@ keep them.
 1. **It distributes no Apple software or secrets.** The repository, releases
    and APKs contain no IPSWs, kernels, device trees, SEP firmware, SecureROM
    or SEP ROM dumps, decryption keys/IVs, tickets, or pre-made disk images.
-   `.gitignore` excludes VM folders and build output.
+   `.gitignore` excludes VM folders and build output. The one exception is the AVF bundle (point 6). It is
+   never committed or released, and it is uploaded only inside an encrypted archive.
+Points 2 and 3 concern the QEMU (Inferno) backend.
+
 2. **It doesn't tell you how to obtain Apple files.** No download links, key
    lookups, or "where to find" pointers. `tools/ipsw_probe.py --list` reports
    iOS versions and compatibility verdicts only. It deliberately strips
@@ -40,6 +43,15 @@ keep them.
    adding them is out of scope.
 5. **It doesn't impersonate Apple or upstream.** The app's name is
    descriptive; its icon is a generic phone, with no Apple logos.
+6. **The AVF backend's bundle (the repository owner's decision, 2026-10-29).** The AVF backend runs Apple's
+   open-source XNU (HakiOS) with iOS 16.5's userland, not Inferno. For it, the `ios-bundle` workflow
+   (`.github/workflows/ios-bundle.yml`), when the owner runs it, does three things:
+   - downloads iOS 16.5 from Apple's CDN (no decryption: that version's images are not encrypted);
+   - builds the VM's images;
+   - uploads them with the app in one archive, AES-256 with the file names hidden, under a passphrase that
+     lives only in a repository secret. The archive is kept for 3 days and is for the owner's private use.
+
+   Nothing of Inferno's firmware is touched, so upstream Inferno's request (point 3) still holds.
 
 ## Why this is a reasonable thing to build
 
