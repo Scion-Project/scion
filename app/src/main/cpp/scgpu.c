@@ -128,9 +128,21 @@ struct sr_fence { uint32_t flags; uint64_t fence_id; uint32_t ctx_id; uint8_t ri
 #define SR_PARAM_FENCE_CALLBACK 3
 #define SR_PARAM_WIN0_WIDTH     4
 #define SR_PARAM_WIN0_HEIGHT    5
+#define SR_PARAM_RENDERER_FEATURES 11
 #define SR_FLAGS_USE_EGL        (1u << 0)
 #define SR_FLAGS_SURFACELESS    (1u << 3)
 #define SR_FLAGS_USE_GLES       (1u << 4)
+#define SR_FLAGS_USE_VK         (1u << 5)
+#define CAPSET_GFXSTREAM_VULKAN 3
+
+/*
+ * Vulkan for the guest (hackios-xnu-kernel tools/gfxstream/VULKAN.md): gfxstream's Vulkan decoder on the phone's
+ * own driver, the guest's Vulkan stream on the same pipe as its GL. The guest cannot map host memory here, so
+ * host-visible memory is a guest copy moved on flush and invalidate: VirtioGpuNext off, and no insistence on a
+ * coherent cached memory type, which that leaves none of. On by default; debug.scion.vk=0 turns it off, and a
+ * renderer that will not start with it starts as before, GL alone.
+ */
+static const char vk_features[] = "VirtioGpuNext:disabled,VulkanEnsureCachedCoherentMemoryAvailable:disabled";
 
 static struct {
 	int (*init)(struct sr_param *, uint64_t);
@@ -159,7 +171,7 @@ static struct {
 	volatile struct scgpu_header *h;
 	int fb_w, fb_h;
 	pthread_t thread;
-	int running, renderer_up;
+	int running, renderer_up, vulkan;
 	volatile int stop;
 	pthread_mutex_t window_lock;
 	ANativeWindow *window;
@@ -348,14 +360,15 @@ handle_cmd(const uint8_t *cmd, uint32_t len, uint32_t max, uint8_t *resp)
 		struct resp_capset_info r;
 		NEED(c);
 		memcpy(&c, cmd, sizeof(c));
-		if (c.capset_index != 0) {
-			err = -ENOENT;          /* one capset: gfxstream's GLES */
+		/* gfxstream's GLES, then its Vulkan when the renderer has it */
+		if (c.capset_index > (S.vulkan ? 1u : 0u)) {
+			err = -ENOENT;
 			break;
 		}
 		memset(&r, 0, sizeof(r));
 		r.hdr.type = RESP_OK_CAPSET_INFO;
-		r.capset_id = CAPSET_GFXSTREAM_GLES;
-		sr.get_cap_set(CAPSET_GFXSTREAM_GLES, &r.capset_max_version, &r.capset_max_size);
+		r.capset_id = c.capset_index == 0 ? CAPSET_GFXSTREAM_GLES : CAPSET_GFXSTREAM_VULKAN;
+		sr.get_cap_set(r.capset_id, &r.capset_max_version, &r.capset_max_size);
 		memcpy(resp, &r, sizeof(r));
 		return sizeof(r);
 	}
@@ -857,19 +870,32 @@ Java_io_github_dylanneve1_iosonpixel_avf_ScgpuNative_start(JNIEnv *env, jclass c
 		return -1;
 	}
 	if (!S.renderer_up) {
+		char vk_prop[PROP_VALUE_MAX] = "";
+		int vk = !(__system_property_get("debug.scion.vk", vk_prop) > 0 && vk_prop[0] == '0');
 		struct sr_param params[] = {
 			{ SR_PARAM_USER_DATA, 0 },
-			{ SR_PARAM_RENDERER_FLAGS, SR_FLAGS_USE_EGL | SR_FLAGS_SURFACELESS | SR_FLAGS_USE_GLES },
+			{ SR_PARAM_RENDERER_FLAGS, SR_FLAGS_USE_EGL | SR_FLAGS_SURFACELESS | SR_FLAGS_USE_GLES |
+			    (vk ? SR_FLAGS_USE_VK : 0) },
 			{ SR_PARAM_FENCE_CALLBACK, (uint64_t)(uintptr_t)fence_cb },
 			{ SR_PARAM_WIN0_WIDTH, (uint64_t)fb_w },
 			{ SR_PARAM_WIN0_HEIGHT, (uint64_t)fb_h },
+			{ SR_PARAM_RENDERER_FEATURES, (uint64_t)(uintptr_t)vk_features },   /* last: dropped without Vulkan */
 		};
-		int rc = sr.init(params, sizeof(params) / sizeof(params[0]));
+		uint64_t n = sizeof(params) / sizeof(params[0]) - (vk ? 0 : 1);
+		int rc = sr.init(params, n);
+		if (rc != 0 && vk) {
+			ERR("stream_renderer_init with Vulkan: %d; starting it again for GL alone", rc);
+			vk = 0;
+			params[1].value &= ~(uint64_t)SR_FLAGS_USE_VK;
+			rc = sr.init(params, n - 1);
+		}
 		if (rc != 0) {
 			ERR("stream_renderer_init: %d", rc);
 			return -4;
 		}
+		LOG("renderer up: GL%s", vk ? " and Vulkan" : " (Vulkan off: debug.scion.vk=0, or it would not start)");
 		S.renderer_up = 1;
+		S.vulkan = vk;
 	}
 	S.h = (volatile struct scgpu_header *)S.base;
 	memset(S.base, 0, SCGPU_POOL_OFF);
@@ -877,7 +903,7 @@ Java_io_github_dylanneve1_iosonpixel_avf_ScgpuNative_start(JNIEnv *env, jclass c
 	S.h->version = SCGPU_VERSION;
 	S.h->size = S.size;
 	S.h->features_lo = (1u << F_VIRGL) | (1u << F_CONTEXT_INIT);
-	S.h->num_capsets = 1;
+	S.h->num_capsets = S.vulkan ? 2 : 1;
 	S.commands = S.errors = S.busy_ns = 0;
 	S.rings_in = S.rings_out = S.sleeps = 0;
 	S.records = S.record_bytes = 0;
