@@ -6,7 +6,8 @@
 #
 # What it does, in order:
 #   1. checks the bundle (SHA256SUMS);
-#   2. installs or updates the app (adb install -r: an existing install keeps its data);
+#   2. installs or updates the app (adb install -r: an existing install keeps its data; one signed with
+#      another key is left as it is);
 #   3. grants the two VM permissions;
 #   4. sets the one global setting Android's custom-VM API needs
 #      (hidden_api_blacklist_exemptions, docs/PHONE-QUICKSTART.md; undo:
@@ -39,7 +40,15 @@ if sh_ dumpsys activity services "$PKG" 2>/dev/null | grep -q ServiceRecord; the
 fi
 
 echo "== the app"
-"${ADB[@]}" install -r scion.apk
+# A phone whose Scion is signed with another key (built on another computer) refuses this one: that app is
+# kept as it is, with its data (never uninstalled here), and only the VM's files are added to it.
+if ! out=$("${ADB[@]}" install -r scion.apk 2>&1); then
+	case "$out" in
+	*UPDATE_INCOMPATIBLE*|*signatures*do*not*match*)
+		echo "   the installed Scion is signed with another key: keeping it and its data, adding only the VM" ;;
+	*) echo "$out" >&2; exit 1 ;;
+	esac
+fi
 sh_ pm grant "$PKG" android.permission.MANAGE_VIRTUAL_MACHINE
 sh_ pm grant "$PKG" android.permission.USE_CUSTOM_VIRTUAL_MACHINE
 sh_ settings put global hidden_api_blacklist_exemptions "\"$EXEMPT\""
