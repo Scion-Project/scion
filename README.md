@@ -25,10 +25,11 @@ port of the [Inferno](https://github.com/ChefKissInc/Inferno) QEMU fork.
 *iOS 16.5 booting and at the home screen in a pKVM virtual machine on a Pixel 10. The text at the
 bottom is the test app's debug log.*
 
-This project ships **no Apple software**. No IPSWs, keys, firmware, ROMs or
-pre-made disk images, and nothing that downloads or patches them for you. You
-prepare those yourself on a Mac by following the upstream Inferno guide. This
-repo then gets the result running on the phone.
+This project ships **no Apple software**: no IPSWs, keys, firmware, ROMs or pre-made disk images in the
+repository or its releases. For the QEMU backend you prepare those yourself on a Mac by following the upstream
+Inferno guide. For the AVF backend, the owner's `ios-bundle` workflow builds an encrypted, private bundle of the
+app and iOS 16.5 (see [docs/ETHICS.md](docs/ETHICS.md), point 6). This repo then gets the result running on the
+phone.
 
 ## What runs where
 
