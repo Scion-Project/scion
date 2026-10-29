@@ -74,6 +74,24 @@ jobs:
       - name: Install host build tools (Homebrew)
         run: brew install meson ninja pkgconf cmake
 
+      - name: The guest's Vulkan for iOS (hackios-xnu-kernel tools/gfxstream/mk-vk.sh ios; it needs Xcode's clang)
+        env:
+          KERNEL_REF: ${{ inputs.kernel_ref }}
+        run: |
+          git clone -q --filter=blob:none https://github.com/Scion-Project/hackios-xnu-kernel.git "$RUNNER_TEMP/k"
+          git -C "$RUNNER_TEMP/k" checkout -q "$KERNEL_REF"
+          VK_BUILD="$RUNNER_TEMP/vk" bash "$RUNNER_TEMP/k/tools/gfxstream/mk-vk.sh" ios
+          mkdir -p "$RUNNER_TEMP/vk-out"
+          cp "$RUNNER_TEMP/vk/out-ios/libhakios.vk.dylib" "$RUNNER_TEMP/vk/out-ios/vk_test" "$RUNNER_TEMP/vk-out/"
+          ls -la "$RUNNER_TEMP/vk-out"
+
+      - uses: actions/upload-artifact@v4.6.0
+        with:
+          name: scion-vk-for-bundle
+          path: ${{ runner.temp }}/vk-out
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Point Gradle at the SDK
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
@@ -232,12 +250,18 @@ jobs:
         working-directory: /mnt/w/k
         run: avf/shim/build.sh && ls -la avf/shim/out/Image
 
-      - name: The small root and the system image (userland/build.sh GL=gfx REST=1)
+      - uses: actions/download-artifact@v4
+        with:
+          name: scion-vk-for-bundle
+          path: /mnt/w/vk
+
+      - name: The small root and the system image (userland/build.sh GL=gfx REST=1, with the guest's Vulkan)
         working-directory: /mnt/w/k
         run: |
-          (source ./xnu-env.sh && cd userland && GL=gfx REST=1 bash build.sh) > "$W/userland.log" 2>&1 ||
+          (source ./xnu-env.sh && cd userland && GL=gfx REST=1 VK_DIR="$W/vk" bash build.sh) > "$W/userland.log" 2>&1 ||
             { tail -100 "$W/userland.log"; exit 1; }
           tail -5 "$W/userland.log"
+          grep -a 'guest.s Vulkan' "$W/userland.log" || { echo "::error::the root has no Vulkan library"; exit 1; }
           ls -la userland/root.apfs userland/system.apfs
 
       - uses: actions/download-artifact@v4
