@@ -269,6 +269,18 @@ byte-for-byte as it is today while it's off: `inferno` uplink, no `-netdev`. So
 the guarantee changes from "can't reach the network" to "doesn't, unless you
 turn Network on". README and ETHICS wording should say so.
 
+**Done in the app:** Settings › Advanced › **Network (QEMU)**, per install (`qemu_network`
+in the install list). `QemuCommand.build` adds `-netdev user,id=n0` and switches the
+uplink to `usb-uplink-type=net,usb-uplink-addr=n0` only when the setting is on and the
+boot isn't a restore boot (no `ramdisk=` in vm.properties); `QemuCommandTest` checks
+that the command line with the setting off is the one from before. With the setting on,
+`QemuNet` writes the default network's DNS servers (`LinkProperties.getDnsServers()`) to
+`files/run/<id>/resolv.conf`, replaces it atomically when they change, and passes its
+path in `SLIRP_RESOLV_CONF`, which our libslirp reads instead of `/etc/resolv.conf` (#82).
+The status card shows "Network: off / waiting for guest / guest has 10.0.2.15", from
+Inferno's `usb-net-uplink: guest reports network connected` line and slirp's
+`info usernet`.
+
 If a build that *can't* reach the network is ever wanted: a product flavor
 without the permission (about 1 day), or a helper APK that holds INTERNET and
 gets frames through a socketpair fd passed over Binder (about 1 week).

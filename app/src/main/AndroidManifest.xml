@@ -10,9 +10,14 @@
          (adb shell pm grant <pkg> <permission>); never at runtime. -->
     <uses-permission android:name="android.permission.MANAGE_VIRTUAL_MACHINE" />
     <uses-permission android:name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" />
-    <!-- The AVF "Network" setting (useNetwork: a TAP that virtualizationservice tethers to the
-         phone's connection). The Terminal app, which uses the same option, holds it too. -->
+    <!-- The per-install "Network" settings, both off by default: AVF's (useNetwork: a TAP that
+         virtualizationservice tethers to the phone's connection; the Terminal app, which uses the
+         same option, holds it too) and QEMU's (slirp, whose sockets are in this app's UID; see
+         docs/NETWORKING.md). INTERNET is granted at install and can't be revoked, so "off" means
+         the app opens no network socket, not that it can't. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- QEMU's Network setting: the default network's DNS servers (LinkProperties) for slirp. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- The AVF camera (per-install Camera setting, avf/SccamCamera.kt): asked for at run time with
          Android's own prompt when the setting is turned on; used only while Scion is on screen. -->
     <uses-permission android:name="android.permission.CAMERA" />

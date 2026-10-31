@@ -60,30 +60,43 @@ class QemuBackend(ctx: Context, private val install: Install) : VmBackend {
         val extra = QemuCommand.extraArgs(app)
         if (extra.isNotEmpty()) log("debug: ${extra.size} extra QEMU args appended from files/qemu-extra-args.txt")
         val cmd = QemuCommand.build(paths, vm, settings) + settings.extraArgList + extra
+        val network = QemuCommand.network(vm, settings)
+        when {
+            network -> log("network: on (slirp behind the guest's USB link)")
+            settings.qemuNetwork -> log("network: restore boot, so the Network setting is not used")
+        }
         log("$ " + cmd.joinToString(" "))
+        VmState.network(QemuNet.statusText(settings.qemuNetwork, QemuCommand.restoreBoot(vm), connected = false, address = null))
 
-        if (settings.inProcess) {
-            val env = buildMap {
-                put("TMPDIR", paths.tmpDir.absolutePath)
-                if (settings.effectiveVcpuAffinity.isNotBlank()) put("QEMU_VCPU_AFFINITY", settings.effectiveVcpuAffinity)
-            }
-            val vmProcess = QemuInProcess(app, paths, cmd, vm.dir.absolutePath, env)
-            if (vmProcess.bind()) return vmProcess
-            log("error: failed to start QEMU: cannot bind the :vm service")
+        // With the Network setting on, slirp reads the phone's DNS servers from this file (#82).
+        val resolver = if (network) QemuNet.Resolver(app, paths, log).also { it.start() } else null
+        val env = buildMap {
+            put("TMPDIR", paths.tmpDir.absolutePath)
+            if (settings.effectiveVcpuAffinity.isNotBlank()) put("QEMU_VCPU_AFFINITY", settings.effectiveVcpuAffinity)
+            if (resolver != null) put(QemuNet.ENV_RESOLV_CONF, paths.resolvConf.absolutePath)
+        }
+        fun watched(i: VmBackend.Instance): VmBackend.Instance =
+            if (resolver != null) QemuNet.Watch(i, paths, resolver) else i
+        fun failed(message: String): VmBackend.Instance? {
+            log(message)
+            resolver?.stop()
+            VmState.network(null)
             return null
         }
 
-        val pb = ProcessBuilder(cmd).directory(vm.dir).redirectErrorStream(true)
-        pb.environment()["TMPDIR"] = paths.tmpDir.absolutePath
-        if (settings.effectiveVcpuAffinity.isNotBlank()) {
-            pb.environment()["QEMU_VCPU_AFFINITY"] = settings.effectiveVcpuAffinity
+        if (settings.inProcess) {
+            val vmProcess = QemuInProcess(app, paths, cmd, vm.dir.absolutePath, env)
+            if (vmProcess.bind()) return watched(vmProcess)
+            return failed("error: failed to start QEMU: cannot bind the :vm service")
         }
 
+        val pb = ProcessBuilder(cmd).directory(vm.dir).redirectErrorStream(true)
+        pb.environment().putAll(env)
+
         return try {
-            Instance(pb.start())
+            watched(Instance(pb.start()))
         } catch (e: Exception) {
-            log("error: failed to start QEMU: $e")
-            null
+            failed("error: failed to start QEMU: $e")
         }
     }
 
@@ -171,20 +184,42 @@ object QemuCommand {
         return runCatching { f.readText().split(Regex("\\s+")).filter { it.isNotEmpty() } }.getOrDefault(emptyList())
     }
 
+    /** The slirp netdev's id; the machine's net uplink names it. */
+    const val NETDEV_ID = "n0"
+
+    /** A restore boot: the VM folder names a restore ramdisk (passed as -initrd). */
+    fun restoreBoot(vm: VmLayout): Boolean = vm.ramdisk?.isFile == true
+
+    /**
+     * Whether this boot gets the guest network: the Network setting is on and it is a normal boot.
+     * Restore boots always keep the inferno uplink, which restore tools talk to.
+     */
+    fun network(vm: VmLayout, s: VmSettings): Boolean = s.qemuNetwork && !restoreBoot(vm)
+
     /** Mirrors the sample command from the Inferno guide, minus host-only display flags. */
     fun build(paths: AppPaths, vm: VmLayout, s: VmSettings): List<String> {
         fun path(key: String) = vm.file(key)!!.absolutePath
-        val machine = listOf(
-            "t8030",
-            "trustcache=${path("trustcache")}",
-            "sep-fw=${path("sep_fw")}",
-            "sep-rom=${path("sep_rom")}",
-            "kaslr-off=true",
+        val network = network(vm, s)
+        val uplink = if (network) listOf(
+            // The guest's USB NCM link, bridged to the slirp netdev below (Inferno's
+            // usb-uplink-type=net: QEMU is the USB host and puts the iPhone in mode 3).
+            "usb-uplink-type=net",
+            "usb-uplink-addr=$NETDEV_ID",
+        ) else listOf(
             // Connect out over a unix socket (retried quietly while nothing
             // listens) instead of the default TCP server, which needs INTERNET.
             "usb-uplink-type=inferno",
             "usb-uplink-addr=unix:${paths.usbUplinkSocket.absolutePath}",
-        ).joinToString(",")
+        )
+        val machine = (
+            listOf(
+                "t8030",
+                "trustcache=${path("trustcache")}",
+                "sep-fw=${path("sep_fw")}",
+                "sep-rom=${path("sep_rom")}",
+                "kaslr-off=true",
+            ) + uplink
+            ).joinToString(",")
 
         val accel = buildString {
             append("tcg,thread=multi,tb-size=").append(s.tbSizeMb)
@@ -218,6 +253,9 @@ object QemuCommand {
             "-drive", "file=sep_nvram,if=pflash,format=raw,file.locking=off",
             "-drive", "file=sep_ssc,if=pflash,format=raw,file.locking=off",
         )
+        // User-mode networking: DHCP, DNS and NAT in QEMU, through ordinary sockets in the app's
+        // UID. Only with the Network setting on; off, there is no netdev at all.
+        if (network) args += listOf("-netdev", "user,id=$NETDEV_ID")
 
         fun nvme(id: String, file: String, format: String, device: String, nsid: Int, nstype: Int, extra: String = "") {
             args += listOf(
