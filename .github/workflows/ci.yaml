@@ -99,14 +99,14 @@ jobs:
       - name: Point Gradle at the SDK
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
-      # Both caches are keyed on the hash of build-android.sh: the dep URLs,
+      # Both caches are keyed on the hash of build-android.sh and native/patches: the dep URLs,
       # sha256 sums and build flags all live there, so any change invalidates
       # them.
       - name: Cache dependency tarballs
         uses: actions/cache@v4.2.0
         with:
           path: native/build/dl
-          key: deps-dl-${{ runner.os }}-${{ hashFiles('native/build-android.sh') }}
+          key: deps-dl-${{ runner.os }}-${{ hashFiles('native/build-android.sh', 'native/patches/**') }}
 
       # Cache the built static libs. This is the ~10 min saver: on a hit the
       # deps step below is skipped and only QEMU is rebuilt. Safe because the
@@ -118,7 +118,7 @@ jobs:
         uses: actions/cache@v4.2.0
         with:
           path: native/build/sysroot
-          key: deps-sysroot-${{ runner.os }}-${{ github.event.repository.name }}-${{ hashFiles('native/build-android.sh') }}
+          key: deps-sysroot-${{ runner.os }}-${{ github.event.repository.name }}-${{ hashFiles('native/build-android.sh', 'native/patches/**') }}
 
       # Sets up Gradle and caches ~/.gradle (caches + wrapper dists) automatically.
       - name: Set up Gradle
@@ -218,14 +218,14 @@ jobs:
       - name: Point Gradle at the SDK
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
-      # Both caches are keyed on the hash of build-android.sh: the dep URLs,
+      # Both caches are keyed on the hash of build-android.sh and native/patches: the dep URLs,
       # sha256 sums and build flags all live there, so any change invalidates
       # them.
       - name: Cache dependency tarballs
         uses: actions/cache@v4.2.0
         with:
           path: native/build/dl
-          key: deps-dl-${{ runner.os }}-${{ hashFiles('native/build-android.sh') }}
+          key: deps-dl-${{ runner.os }}-${{ hashFiles('native/build-android.sh', 'native/patches/**') }}
 
       # Cache the built static libs. This is the ~10 min saver: on a hit the
       # deps step below is skipped and only QEMU is rebuilt. Safe because the
@@ -237,7 +237,7 @@ jobs:
         uses: actions/cache@v4.2.0
         with:
           path: native/build/sysroot
-          key: deps-sysroot-baseline-${{ runner.os }}-${{ github.event.repository.name }}-${{ hashFiles('native/build-android.sh') }}
+          key: deps-sysroot-baseline-${{ runner.os }}-${{ github.event.repository.name }}-${{ hashFiles('native/build-android.sh', 'native/patches/**') }}
 
       # Sets up Gradle and caches ~/.gradle (caches + wrapper dists) automatically.
       - name: Set up Gradle
@@ -341,7 +341,7 @@ jobs:
         uses: actions/cache@v4.2.0
         with:
           path: native/build/dl
-          key: deps-dl-${{ runner.os }}-${{ hashFiles('native/build-android.sh') }}
+          key: deps-dl-${{ runner.os }}-${{ hashFiles('native/build-android.sh', 'native/patches/**') }}
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4.2.2
