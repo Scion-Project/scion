@@ -225,12 +225,13 @@ object InstallMigration {
 
     /** A fingerprint of the old preferences: settings and location. */
     fun seen(settings: VmSettings, vmInternal: Boolean): String =
-        encode(settings).apply { remove(KEY_AVF_DISPLAY); remove(KEY_AVF_NETWORK); remove(KEY_AVF_CAMERA) }.put("vm_internal", vmInternal).toString()
+        encodeLegacy(settings).put("vm_internal", vmInternal).toString()
 
-    /** Per-install only (not in the old preferences), so it's left out of [seen] and kept by [resync]. */
+    /** Per-install only (not in the old preferences), so they're left out of [seen] and kept by [resync]. */
     private const val KEY_AVF_DISPLAY = "avf_display"
     private const val KEY_AVF_NETWORK = "avf_network"
     private const val KEY_AVF_CAMERA = "avf_camera"
+    private const val KEY_QEMU_NETWORK = "qemu_network"
 
     /**
      * After a downgrade and re-upgrade: if the old preferences no longer match [seen] (what this
@@ -245,6 +246,7 @@ object InstallMigration {
             if (it.legacy) it.copy(
                 settings = legacy.settings.copy(
                     avfDisplay = it.settings.avfDisplay, avfNetwork = it.settings.avfNetwork, avfCamera = it.settings.avfCamera,
+                    qemuNetwork = it.settings.qemuNetwork,
                 ),
                 internal = legacy.vmInternal,
             )
@@ -285,7 +287,12 @@ object InstallMigration {
         }.takeIf { list -> list.map { it.id }.toSet().size == list.size }
     }.getOrNull()
 
-    private fun encode(s: VmSettings) = JSONObject().apply {
+    /**
+     * The settings the single-VM app's preferences also have, in the order [encode] writes them.
+     * A fresh object rather than [encode] minus the per-install keys: org.json's (JVM) map would
+     * order the keys differently once it has grown, and the fingerprint must not change.
+     */
+    private fun encodeLegacy(s: VmSettings) = JSONObject().apply {
         put("ram_gb", s.ramGb)
         put("smp", s.smp)
         put("tb_size_mb", s.tbSizeMb)
@@ -295,9 +302,13 @@ object InstallMigration {
         put("in_process", s.inProcess)
         put("security", s.security.id)
         put("extra_args", s.extraArgs)
+    }
+
+    private fun encode(s: VmSettings) = encodeLegacy(s).apply {
         put(KEY_AVF_DISPLAY, s.avfDisplay)
         put(KEY_AVF_NETWORK, s.avfNetwork)
         put(KEY_AVF_CAMERA, s.avfCamera)
+        put(KEY_QEMU_NETWORK, s.qemuNetwork)
     }
 
     private fun decodeSettings(o: JSONObject): VmSettings {
@@ -315,6 +326,7 @@ object InstallMigration {
             avfDisplay = o.optBoolean(KEY_AVF_DISPLAY, d.avfDisplay),
             avfNetwork = o.optBoolean(KEY_AVF_NETWORK, d.avfNetwork),
             avfCamera = o.optBoolean(KEY_AVF_CAMERA, d.avfCamera),
+            qemuNetwork = o.optBoolean(KEY_QEMU_NETWORK, d.qemuNetwork),
         )
     }
 }

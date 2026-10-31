@@ -116,6 +116,14 @@ data class VmSettings(
      * refused, the setting goes back off. Per install only, as [avfDisplay].
      */
     val avfCamera: Boolean = true,
+    /**
+     * QEMU only: the guest's network (docs/NETWORKING.md, #83). Off by default, and off means the
+     * command line is exactly what it was before this setting: the inferno uplink on a unix
+     * socket, no -netdev, so nothing opens a network socket. On: slirp (-netdev user) behind the
+     * guest's USB NCM link ([QemuCommand.network]); restore boots never use it. Per install only,
+     * like [avfDisplay].
+     */
+    val qemuNetwork: Boolean = false,
 ) {
     /** [extraArgs] as tokens. */
     val extraArgList: List<String> get() = extraArgs.split(Regex("\\s+")).filter { it.isNotEmpty() }
@@ -213,19 +221,30 @@ object TensorG5 {
  * Paths the app uses at runtime for install [installId]: its sockets, logs and run records, so
  * two installs never clobber each other. The install's VM folder itself is [Install.dir].
  */
-class AppPaths(ctx: Context, val installId: String) {
-    private val external: File = ctx.getExternalFilesDir(null) ?: File(ctx.filesDir, "shared")
+class AppPaths(
+    filesDir: File,
+    val tmpDir: File,
+    private val external: File,
+    nativeLibraryDir: String,
+    val installId: String,
+) {
+    constructor(ctx: Context, installId: String) : this(
+        filesDir = ctx.filesDir,
+        tmpDir = ctx.cacheDir,
+        external = ctx.getExternalFilesDir(null) ?: File(ctx.filesDir, "shared"),
+        nativeLibraryDir = ctx.applicationInfo.nativeLibraryDir,
+        installId = installId,
+    )
 
-    val qemu = File(ctx.applicationInfo.nativeLibraryDir, "libqemu-system-aarch64.so")
+    val qemu = File(nativeLibraryDir, "libqemu-system-aarch64.so")
     /** The in-process variant: QEMU as a library, and the JNI shim that calls it. */
-    val qemuLib = File(ctx.applicationInfo.nativeLibraryDir, "libqemu-system-aarch64-shared.so")
-    val qemuJni = File(ctx.applicationInfo.nativeLibraryDir, "libqemu_jni.so")
+    val qemuLib = File(nativeLibraryDir, "libqemu-system-aarch64-shared.so")
+    val qemuJni = File(nativeLibraryDir, "libqemu_jni.so")
     /** Keymaps etc.: read-only, shared by all installs. */
-    val dataDir = File(ctx.filesDir, "qemu-data")
-    val tmpDir: File = ctx.cacheDir
+    val dataDir = File(filesDir, "qemu-data")
 
     /** files/run/<id>: this install's sockets and run records (short, for the 108-byte socket path limit). */
-    val runDir = File(File(ctx.filesDir, "run"), installId)
+    val runDir = File(File(filesDir, "run"), installId)
     val vncSocket = File(runDir, "vnc.sock")
     val monitorSocket = File(runDir, "monitor.sock")
     /** QMP, for multi-touch input ([QmpTouch]). */
@@ -235,6 +254,11 @@ class AppPaths(ctx: Context, val installId: String) {
      * defaults to a TCP listener, which needs the INTERNET permission (#67).
      */
     val usbUplinkSocket = File(runDir, "usb-uplink.sock")
+    /**
+     * The phone's DNS servers for slirp (the QEMU Network setting): resolv.conf format, named by
+     * SLIRP_RESOLV_CONF in QEMU's environment, rewritten when the phone's network changes ([QemuNet]).
+     */
+    val resolvConf = File(runDir, "resolv.conf")
     /** The last run's status and output view, for the debug bundle. */
     val lastRun = File(runDir, "last_run.txt")
     val lastRunOutput = File(runDir, "last_run_output.txt")
