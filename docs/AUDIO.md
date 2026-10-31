@@ -81,7 +81,7 @@ QEMU needs somewhere to send PCM. Options considered:
 |---|---|---|---|
 | QEMU code | new audio driver, ~300 lines + QAPI/meson | new audio driver (socket writer), ~200 lines | none |
 | App code | audio focus only | reader thread + `AudioTrack` + reconnect | reader thread + `AudioTrack` |
-| Child-process mode (default) | yes, if AAudio works from the exec'd child (same uid/SELinux domain as the app; to verify) | yes | yes |
+| Child-process mode (default) | yes: AAudio opens from a plain exec'd native process (checked, see below) | yes | yes |
 | In-process mode (`:vm`) | yes, plainly an app process | yes | yes |
 | Latency | lowest: a callback straight from the audio HAL, MMAP path on Pixel | extra socket + `AudioTrack` buffer | pipe buffer + `AudioTrack` buffer; writes block the QEMU audio timer if the reader stalls |
 | Copies | QEMU ring → AAudio | QEMU → kernel → app → AudioTrack | same as socket |
@@ -92,9 +92,30 @@ because the display was VNC on a unix socket. Since #66 the app can run QEMU in-
 straight into a `Surface`, with input over JNI, so the "everything over unix sockets" design
 is now only the child-process path. An in-QEMU AAudio driver works the same way in both modes,
 keeps PCM inside one process, and gives the lowest latency. The app's only job is to
-request audio focus while a VM runs. The one thing to check first (milestone 3, step 1) is that
-AAudio opens from the exec'd child process. If it doesn't, the fallback is the socket writer
-plus `AudioTrack`, used for the child-process mode only.
+request audio focus while a VM runs. The one thing to check first (milestone 3, step 1) was that
+AAudio opens from the exec'd child process. If it hadn't, the fallback would have been the socket
+writer plus `AudioTrack`, for the child-process mode only. It does open:
+
+**Step 1 result (2026-10-31).** `tools/aaudio_tone.c` opens an output stream with the same builder
+settings as the driver (S16 stereo 48 kHz, low latency, `USAGE_GAME`, data callback) and plays
+440 Hz for a few seconds, printing every result code and the frames the callback produced. Built
+with NDK r28c for API 31 and run on the API 36 arm64 emulator (`-no-audio`, so checked by result
+codes and frame counts, not by ear):
+
+| Run as | Domain | open / start / stop | State | Frames in 3 s | Xruns |
+|---|---|---|---|---|---|
+| shell (`adb shell`, uid 2000) | `shell` | all `AAUDIO_OK` | `STARTED` | 136320 | 0 |
+| the app's uid (`run-as io.github.dylanneve1.iosonpixel`) | `runas_app` | all `AAUDIO_OK` | `STARTED` | 114240 | 0 |
+
+Both got 48000 Hz, 2 ch, I16, 960-frame bursts. The emulator granted `PERFORMANCE_MODE_NONE`, as
+expected from its HAL. `run-as` isn't quite the `untrusted_app` domain the app's exec'd QEMU child
+runs in, but AAudio only needs binder access to audioserver, which both domains have, and the
+plainest case (the shell user) works too. The first run in the real child is the issue 94 wiring.
+
+```
+$NDK/toolchains/llvm/prebuilt/*/bin/aarch64-linux-android31-clang -O2 -o aaudio_tone tools/aaudio_tone.c -laaudio -lm
+adb push aaudio_tone /data/local/tmp/ && adb shell /data/local/tmp/aaudio_tone 3
+```
 
 Format: open the stream as S16 stereo 48 kHz, `AAUDIO_PERFORMANCE_MODE_LOW_LATENCY`,
 `AAUDIO_USAGE_GAME`, data-callback mode reading from a lock-free ring that QEMU's `write` op
@@ -140,9 +161,9 @@ Each milestone is one PR (or a few small ones) with its own issue.
    MCA/DMA config instead of hard-coding cluster 5 / S16 stereo. Check: a system sound (lock
    click, keyboard click, a ringtone preview) produces non-silent samples in a `wav` capture
    on the Mac. *Effort: 3–6 days; this is the part with unknowns.*
-3. **Inferno: AAudio audio driver** (#93). `audio/aaudio.c`, QAPI `AudiodevDriver` entry, meson
-   detection of `aaudio/AAudio.h` + `libaaudio`. Step 1: confirm AAudio opens from the
-   app's child process. Check: tone/WAV playback on the emulator and a Pixel. *Effort: 2–3 days.*
+3. **Inferno: AAudio audio driver** (#93, Inferno#64). `audio/aaudio.c`, QAPI `AudiodevDriver` entry,
+   meson detection of `aaudio/AAudio.h` + `libaaudio`. Step 1, checking that AAudio opens from a
+   plain exec'd process, passed (see above). Check: tone/WAV playback on the emulator and a Pixel. *Effort: 2–3 days.*
 4. **ios-on-pixel: build and app wiring** (#94). Enable the driver in `build-android.sh`, pass
    `audio=on,audiodev=snd0 -audiodev aaudio,id=snd0` (behind a setting, default on once
    stable), request audio focus, mute while paused. *Effort: 1 day.*

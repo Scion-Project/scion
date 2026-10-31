@@ -331,7 +331,7 @@ configure_qemu() { # builddir [extra meson args...]
     -Dvde=disabled -Dalsa=disabled -Doss=disabled -Dpa=disabled -Dpipewire=disabled \
     -Djack=disabled -Dsndio=disabled -Dfuse=disabled -Dmultiprocess=disabled \
     -Dvalgrind=disabled -Dlibkeyutils=disabled -Dauth_pam=disabled -Dbrlapi=disabled \
-    $(lto_args) "$@"
+    $(lto_args) $(audio_args) "$@"
   qemu_config_id "$@" > "$b/.android-config"
 }
 
@@ -339,11 +339,18 @@ lto_args() {
   [[ "$QEMU_LTO" == off ]] || echo "-Db_lto=true -Db_lto_mode=$QEMU_LTO"
 }
 
+# The AAudio driver (-audiodev aaudio, docs/AUDIO.md). meson would pick it up
+# on its own from the NDK headers; enabling it makes a failed detection an
+# error instead of a build without sound. Older Inferno trees lack the option.
+audio_args() {
+  grep -q "option('aaudio'" "$SRC_QEMU/meson_options.txt" && echo "-Daaudio=enabled"
+}
+
 # Everything that decides how QEMU is compiled, so a build tree configured with
 # other options (tuning, -O level, LTO, PGO) gets reconfigured instead of reused.
 qemu_config_id() { # [extra meson args...]
   cat "$WORK/android-arm64-qemu.cross"
-  echo "$(lto_args) $*"
+  echo "$(lto_args) $(audio_args) $*"
 }
 
 needs_configure() { # builddir [extra meson args...]
