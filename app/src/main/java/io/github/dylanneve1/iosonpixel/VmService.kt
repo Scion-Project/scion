@@ -50,6 +50,18 @@ object VmState {
         notifyListeners()
     }
 
+    /**
+     * The QEMU Network setting's status line for the running VM ("Network: off", "Network: waiting
+     * for guest", "Network: guest has 10.0.2.15"; see [QemuNet.statusText]), or null when no QEMU VM runs.
+     */
+    @Volatile var network: String? = null
+        private set
+
+    fun network(text: String?) {
+        network = text
+        notifyListeners()
+    }
+
     /** VMs started in this process (counted at STARTING), so a screen can tell when "its" run is over. */
     @Volatile var runs = 0
         private set
@@ -119,6 +131,7 @@ class VmService : Service() {
         }
 
         VmState.notice(null)
+        VmState.network(null)
         VmState.install = install
         VmState.set(VmState.Status.STARTING, exit = null)
         val vm = backend.start(settings, VmState::addLine) ?: run {

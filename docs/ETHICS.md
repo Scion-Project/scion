@@ -53,6 +53,13 @@ Points 2 and 3 concern the QEMU (Inferno) backend.
 
    Nothing of Inferno's firmware is touched, so upstream Inferno's request (point 3) still holds.
 
+7. **It doesn't use the network unless you turn it on.** The app declares Android's INTERNET
+   permission, because the guest's network (the per-install **Network** settings, QEMU and AVF) runs
+   in the app's own process. Android grants that permission at install and offers no way to revoke it,
+   so this is a promise about behaviour: with Network off, which is the default, the app and QEMU open
+   no network socket, and QEMU's command line has no `-netdev` (a unit test checks it). See
+   [NETWORKING.md](NETWORKING.md).
+
 ## Why this is a reasonable thing to build
 
 * **Emulation itself is lawful and well established.** Building software that

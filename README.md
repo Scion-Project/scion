@@ -31,6 +31,10 @@ Inferno guide. For the AVF backend, the owner's `ios-bundle` workflow builds an 
 app and iOS 16.5 (see [docs/ETHICS.md](docs/ETHICS.md), point 6). This repo then gets the result running on the
 phone.
 
+The app doesn't use the network unless you turn **Network** on for an install (off by default; see
+[docs/PHONE-QUICKSTART.md](docs/PHONE-QUICKSTART.md#network-qemu)). It declares Android's INTERNET
+permission for that setting, and Android grants it at install.
+
 ## What runs where
 
 ```

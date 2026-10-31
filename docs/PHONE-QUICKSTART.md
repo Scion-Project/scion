@@ -154,6 +154,7 @@ The settings on the main screen are saved when you tap **Start**:
 | JIT translation cache (MiB) | 1024 | 64–4096 |
 | vCPU → Tensor G5 core pinning | `auto` | `auto` derives it from the vCPU count (application vCPUs → `2-7`, SEP vCPU → `0-1`; the effective string is shown under the field). Or one cpu-set per vCPU, `;`-separated, the last one repeats. Empty turns pinning off |
 | Split W^X JIT mapping | off | try it only if QEMU fails to allocate its code buffer |
+| Network (QEMU) | **off** | Advanced. The guest's internet through the phone's connection; see [Network](#network-qemu) |
 
 Tap **Start**. The status goes *starting → running*, the notification
 appears, and the display opens. QEMU's output scrolls under **QEMU output** on
@@ -218,13 +219,44 @@ With adb you can also read the log directly:
 * **Touch.** Each finger is passed through as its own contact (over QMP) when
   the bundled Inferno has multitouch support in its touch controller
   (Scion-Project/pyre#12); otherwise only one finger works. There's no
-  hardware keyboard input beyond the buttons above. The app doesn't configure audio or networking.
+  hardware keyboard input beyond the buttons above. The app doesn't configure audio. Networking is
+  off unless you turn it on (see [Network](#network-qemu)).
 * **Long runs are untested.** We don't yet know how Android's background
   limits (the phantom-process killer) treat a long boot with the screen off.
   Keep the app or the display in front during the first runs.
 * **AVF (hardware virtualization)** boots a custom kernel, not iOS yet, and has
   no display. See [AVF backend](#avf-backend-experimental) below and
   [scion-avf](https://github.com/Scion-Project/scion-avf).
+
+## Network (QEMU)
+
+**Settings › Advanced › Network (QEMU)**, per install, **off by default**.
+The design is in [NETWORKING.md](NETWORKING.md).
+
+* **Off:** QEMU's command line is the same as in builds that had no setting:
+  the guest's USB port connects out over a unix socket (`usb-uplink-type=inferno`)
+  and there is no `-netdev`. Nothing opens a network socket.
+* **On:** normal boots get QEMU's user-mode network (slirp: DHCP, DNS and NAT)
+  behind the iPhone's own USB reverse tether (`-netdev user,id=n0` and
+  `usb-uplink-type=net,usb-uplink-addr=n0`). iOS gets 10.0.2.15 and uses the
+  phone's Wi-Fi or mobile data. It shows as a wired link: Settings › Wi-Fi stays
+  empty and there's no Wi-Fi icon. DNS goes to the phone's current DNS servers,
+  which the app writes to `files/run/<id>/resolv.conf` and updates when the
+  phone changes networks.
+* **Restore boots** (a VM folder with a `ramdisk=` entry) always keep the
+  `inferno` uplink, so the setting has no effect on them.
+* The status card shows **Network: off**, **Network: waiting for guest**, or
+  **Network: guest has 10.0.2.15** while a QEMU VM runs. The output starts with
+  `network: on (slirp behind the guest's USB link)` and the DNS servers used.
+* Needs a QEMU build with libslirp ([#82](https://github.com/Scion-Project/scion/issues/82)).
+  Without it QEMU exits at once with an error about `-netdev user`.
+
+**Why the app declares INTERNET.** slirp's sockets belong to the app, so the
+app has to declare `android.permission.INTERNET` (and `ACCESS_NETWORK_STATE`,
+for the DNS servers). Android grants INTERNET at install and has no switch to
+take it away, so the promise is that the app **doesn't** use the network unless
+you turn Network on, not that it can't. To check: with the setting off, nothing
+shows in `adb shell ss -tuanp` (or `lsof -i`) for the app's processes during a boot.
 
 ## Several installs
 
