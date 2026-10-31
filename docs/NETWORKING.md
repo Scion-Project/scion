@@ -105,8 +105,9 @@ ideally iOS shows that as Wi-Fi.
   * `virtualhere` listens on TCP;
   * `inferno` connects to a unix socket. The app uses this since #76. Nothing
     listens on the socket during a normal boot.
-* **The app has no INTERNET permission** (#67, #76), and the Android QEMU
-  build has `-Dslirp=disabled`.
+* **The app has no INTERNET permission** (#67, #76). The Android QEMU build
+  has libslirp since #82 (`-netdev user` exists), with the DNS change described
+  under "libslirp on Android" below.
 
 ## The real hardware, and what the drivers expect
 
@@ -274,10 +275,63 @@ without the permission (about 1 day), or a helper APK that holds INTERNET and
 gets frames through a socketpair fd passed over Binder (about 1 week).
 
 **Android-specific gotcha (#82):** libslirp finds the upstream resolver by
-reading `/etc/resolv.conf`, which Android doesn't have. The app has to pass the
-resolver from `LinkProperties`, or DNS has to go through a proxy in the app.
+reading `/etc/resolv.conf`, which Android doesn't have. The fix is below.
 `-netdev user,restrict=on` (DHCP and guest-to-host only) needs no permission,
 which is handy for testing.
+
+## libslirp on Android (#82)
+
+`native/build-android.sh` builds libslirp (a pinned release tarball, like the
+other deps) and configures QEMU with `-Dslirp=enabled`, for both the
+executable and the in-process library. It applies one small patch,
+`native/patches/libslirp-android.patch`.
+
+**DNS: the interface between QEMU and the app.** The patch makes libslirp read
+its resolvers from the file named by the environment variable
+**`SLIRP_RESOLV_CONF`** instead of `/etc/resolv.conf`. Nothing else changes,
+and nothing changes on the QEMU command line. When the variable is unset or
+empty, libslirp reads `/etc/resolv.conf` as upstream does.
+
+* **Who sets it:** the app, before QEMU starts. For the exec path, in the
+  `ProcessBuilder` environment. For the in-process path (`:vm`), with
+  `Os.setenv("SLIRP_RESOLV_CONF", path, true)` before `qemu_android_main`.
+  libslirp reads the variable once, at the first DNS lookup, so it must not
+  change while QEMU runs.
+* **The file:** resolv.conf format, one line per entry of
+  `LinkProperties.getDnsServers()` (needs `ACCESS_NETWORK_STATE`):
+  `nameserver <numeric address>`. IPv4 and IPv6 both work. A link-local IPv6
+  address needs its interface: `nameserver fe80::1%wlan0`
+  (`LinkProperties.getInterfaceName()`). libslirp uses the first valid IPv4
+  entry for the guest's IPv4 queries and the first IPv6 entry for IPv6 ones.
+  The file lives in the app's private storage, for example
+  `<filesDir>/net/resolv.conf`.
+* **Network changes:** write a temporary file in the same directory and
+  `rename()` it over the old one. libslirp checks the file at most once a
+  second and re-reads it when its inode, size or mtime changed, so no restart
+  is needed.
+* **No resolvers:** delete the file. Don't write one without `nameserver`
+  lines: libslirp would then fall back to 127.0.0.1, and Android has no
+  resolver there. With the file missing, the guest's DNS queries are dropped
+  until it comes back; nothing else breaks.
+* **The guest** keeps using the virtual nameserver 10.0.2.3 that slirp's DHCP
+  hands out; slirp forwards its UDP port 53 traffic to the address from the
+  file. Android's Private DNS (DNS over TLS) isn't used: queries go as plain
+  UDP to the network's resolvers.
+
+We chose this over a DNS proxy in the app (more code, and another hop for
+every query) and over a new `-netdev user` option (a change to QEMU's net
+code in Inferno, and the exec path would need a restart on every network
+change).
+
+**Without the INTERNET permission**, Android refuses `socket()` for
+`AF_INET`/`AF_INET6` with `EACCES`. libslirp treats that like any other socket
+error: the guest's TCP connection gets a reset and the UDP packet is dropped.
+The patch also turns one `g_error()` (an abort) on a failed socket into a
+warning; it was on the path that forwards to a host unix socket. A
+`hostfwd` rule can't open its listening socket without the permission either,
+so QEMU then stops at start with "could not set up host forwarding rule".
+That's an error message, not a crash, but the app shouldn't pass `hostfwd`
+without the permission.
 
 ## Measured (M1, desktop)
 
@@ -316,7 +370,7 @@ first-boot progress bar, though networking was already up.
 review. The remaining work there: batch frames per NTB for throughput.
 
 **M2: on the Pixel (#82, #83). About 1–2 weeks.** libslirp in the Android
-build with the DNS fix, and the Network setting that passes
+build with the DNS fix (#82: in the build, see "libslirp on Android"), and the Network setting that passes
 `-netdev user,id=n0` and `usb-uplink-type=net,usb-uplink-addr=n0`.
 
 **M3: fake Wi-Fi spike (#84). 2–3 weeks, time-boxed.** A BCM4378 PCIe endpoint

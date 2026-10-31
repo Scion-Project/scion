@@ -1,0 +1,54 @@
+--- a/src/slirp.c
++++ b/src/slirp.c
+@@ -386,11 +386,27 @@
+ #else // !defined(_WIN32) && !defined(__APPLE__)
+ 
+ #if defined(__HAIKU__)
+-#define RESOLV_CONF_PATH "/boot/system/settings/network/resolv.conf"
++#define RESOLV_CONF_DEFAULT "/boot/system/settings/network/resolv.conf"
+ #else
+-#define RESOLV_CONF_PATH "/etc/resolv.conf"
++#define RESOLV_CONF_DEFAULT "/etc/resolv.conf"
+ #endif
+ 
++/*
++ * Scion: Android has no /etc/resolv.conf. The app writes the network's
++ * resolvers to a file in resolv.conf format and names it in
++ * SLIRP_RESOLV_CONF before QEMU starts. The variable is read once.
++ */
++static const char *resolv_conf_path(void)
++{
++    static const char *path;
++    if (!path) {
++        const char *env = g_getenv("SLIRP_RESOLV_CONF");
++        path = (env && env[0]) ? g_strdup(env) : RESOLV_CONF_DEFAULT;
++    }
++    return path;
++}
++#define RESOLV_CONF_PATH resolv_conf_path()
++
+ static int get_dns_addr_cached(void *pdns_addr, void *cached_addr,
+                                socklen_t addrlen, struct stat *cached_stat,
+                                unsigned *cached_time)
+--- a/src/socket.c
++++ b/src/socket.c
+@@ -1176,7 +1176,8 @@
+                 break;
+             }
+             if (not_valid_socket(s)) {
+-                g_error("Ephemeral slirp_socket() allocation failed");
++                /* Scion: no abort when sockets are refused (no INTERNET). */
++                g_warning("Ephemeral slirp_socket() allocation failed");
+                 goto unix2inet_cont;
+             }
+             memset(&in_addr, 0, sizeof(in_addr));
+@@ -1219,7 +1220,8 @@
+                 break;
+             }
+             if (not_valid_socket(s)) {
+-                g_error("Ephemeral slirp_socket() allocation failed");
++                /* Scion: no abort when sockets are refused (no INTERNET). */
++                g_warning("Ephemeral slirp_socket() allocation failed");
+                 goto unix2inet6_cont;
+             }
+             memset(&in6_addr, 0, sizeof(in6_addr));
