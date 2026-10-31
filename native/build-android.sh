@@ -280,6 +280,16 @@ build_glib() {
     -Dforce_fallback_for=pcre2,libffi,proxy-libintl
 }
 
+# User-mode networking (-netdev user). Only needs glib. Android has no
+# /etc/resolv.conf, so native/patches/libslirp-android.patch lets the app name
+# a resolv.conf-format file in SLIRP_RESOLV_CONF (see docs/NETWORKING.md).
+build_libslirp() {
+  local s; s="$(source_dir https://gitlab.freedesktop.org/slirp/libslirp/-/archive/v4.9.7/libslirp-v4.9.7.tar.gz \
+    d2567fa06a6357c7755d61c67293b2c0bf069b3f2173bde6b76cf768529a1938 libslirp)" || exit 1
+  patch -d "$s" -p1 --forward < "$NATIVE/patches/libslirp-android.patch" || exit 1
+  meson_dep "$s"
+}
+
 build_pixman() {
   local s; s="$(source_dir https://www.cairographics.org/releases/pixman-0.46.4.tar.xz \
     a098c33924754ad43f981b740f6d576c70f9ed1006e12221b1845431ebce1239 pixman)" || exit 1
@@ -294,6 +304,7 @@ build_deps() {
   build_lz4
   build_lzfse
   build_glib
+  build_libslirp
   build_pixman
 }
 
@@ -324,7 +335,7 @@ configure_qemu() { # builddir [extra meson args...]
     -Dkvm=disabled -Dhvf=disabled -Dwhpx=disabled -Dtcg=enabled \
     -Dvnc=enabled -Dvnc_jpeg=disabled -Dpng=disabled -Dvnc_sasl=disabled \
     -Dgnutls=disabled -Dsdl=disabled -Dsdl_image=disabled -Dgtk=disabled -Dvte=disabled \
-    -Dcurses=disabled -Dcocoa=disabled -Dslirp=disabled -Dlibssh=disabled \
+    -Dcurses=disabled -Dcocoa=disabled -Dslirp=enabled -Dlibssh=disabled \
     -Dzstd=disabled -Dlzo=disabled -Dsnappy=disabled -Dbzip2=disabled -Dcurl=disabled \
     -Dlinux_aio=disabled -Dlinux_io_uring=disabled -Dlibudev=disabled -Dlibusb=disabled \
     -Dusb_redir=disabled -Dseccomp=disabled -Dcap_ng=disabled -Dxkbcommon=disabled \
@@ -421,6 +432,6 @@ case "${1:-all}" in
   qemu-lib) build_qemu_lib ;;
   pgo-merge) shift; pgo_merge "$@" ;;
   all) build_deps; build_qemu ;;
-  gmp|nettle|tasn1|lz4|lzfse|glib|pixman) "build_$1" ;;
-  *) echo "usage: $0 [deps|qemu|qemu-lib|all|pgo-merge|gmp|nettle|tasn1|lz4|lzfse|glib|pixman]" >&2; exit 2 ;;
+  gmp|nettle|tasn1|lz4|lzfse|glib|libslirp|pixman) "build_$1" ;;
+  *) echo "usage: $0 [deps|qemu|qemu-lib|all|pgo-merge|gmp|nettle|tasn1|lz4|lzfse|glib|libslirp|pixman]" >&2; exit 2 ;;
 esac
