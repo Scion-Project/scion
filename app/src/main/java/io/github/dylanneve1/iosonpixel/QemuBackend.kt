@@ -62,11 +62,8 @@ class QemuBackend(ctx: Context, private val install: Install) : VmBackend {
         val cmd = QemuCommand.build(paths, vm, settings) + settings.extraArgList + extra
         log("$ " + cmd.joinToString(" "))
 
+        val env = QemuCommand.env(paths.tmpDir, settings)
         if (settings.inProcess) {
-            val env = buildMap {
-                put("TMPDIR", paths.tmpDir.absolutePath)
-                if (settings.effectiveVcpuAffinity.isNotBlank()) put("QEMU_VCPU_AFFINITY", settings.effectiveVcpuAffinity)
-            }
             val vmProcess = QemuInProcess(app, paths, cmd, vm.dir.absolutePath, env)
             if (vmProcess.bind()) return vmProcess
             log("error: failed to start QEMU: cannot bind the :vm service")
@@ -74,10 +71,7 @@ class QemuBackend(ctx: Context, private val install: Install) : VmBackend {
         }
 
         val pb = ProcessBuilder(cmd).directory(vm.dir).redirectErrorStream(true)
-        pb.environment()["TMPDIR"] = paths.tmpDir.absolutePath
-        if (settings.effectiveVcpuAffinity.isNotBlank()) {
-            pb.environment()["QEMU_VCPU_AFFINITY"] = settings.effectiveVcpuAffinity
-        }
+        pb.environment().putAll(env)
 
         return try {
             Instance(pb.start())
@@ -169,6 +163,17 @@ object QemuCommand {
         val f = File(ctx.filesDir, "qemu-extra-args.txt")
         if (!f.isFile) return emptyList()
         return runCatching { f.readText().split(Regex("\\s+")).filter { it.isNotEmpty() } }.getOrDefault(emptyList())
+    }
+
+    /**
+     * Environment for QEMU, the same for the child process and the in-process :vm path.
+     * TMPDIR is where -snapshot puts its overlays (vl.XXXXXX): the app's cache dir, which
+     * only the app's uid can write. QEMU run by hand as another uid (adb shell) needs a
+     * TMPDIR of its own, or it fails with "Could not open temporary file" (#68).
+     */
+    fun env(tmpDir: File, s: VmSettings): Map<String, String> = buildMap {
+        put("TMPDIR", tmpDir.absolutePath)
+        s.effectiveVcpuAffinity.takeIf { it.isNotBlank() }?.let { put("QEMU_VCPU_AFFINITY", it) }
     }
 
     /** Mirrors the sample command from the Inferno guide, minus host-only display flags. */
