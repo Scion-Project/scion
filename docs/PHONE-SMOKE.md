@@ -87,6 +87,16 @@ qemu -M t8030,trustcache=restore.trustcache.im4p,sep-fw=placeholder.sepfw,sep-ro
   <sep_nvram/sep_ssc pflash, 7 NVMe namespaces each with id=<name>, as in QemuBackend.kt>
 ```
 
+**`-snapshot` and TMPDIR.** `-snapshot` writes one overlay per drive (`vl.XXXXXX`) to
+`$TMPDIR`. Under `adb shell` that is `/data/local/tmp`, which works. The app sets TMPDIR
+to its cache dir for both the child process and the in-process :vm path, and only the
+app's uid can write there. So a QEMU started by hand as the shell user with the app's
+TMPDIR fails at the first drive with `Could not open temporary file
+'.../cache/vl.XXXXXX': Permission denied` (#68). Run it with `run-as <package>` to use the
+app's cache dir. The SELinux log also shows a denied `ioctl` (`0x581f`,
+FS_IOC_FSGETXATTR) on each overlay. That one is harmless: QEMU only tries to read the
+extent size hint and goes on without it.
+
 **SEP placeholders.** Since Inferno #11, t8030 refuses SEP images that can't be real: empty
 files, files larger than their region (ROM 8 MiB, firmware 16 MiB), and files that are a
 single repeated byte. So zero-filled placeholders stop at load with a clear error. Fill the
