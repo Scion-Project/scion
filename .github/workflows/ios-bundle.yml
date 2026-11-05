@@ -4,7 +4,7 @@
 #           ordinary artifact, kept for a day.
 #   bundle  (Ubuntu, everything big on /mnt):
 #             1. iOS 16.5 (20F66) for iPhone10,3 from Apple's CDN, checked by size and hash, unpacked
-#                (Scion-Project/hackios-xnu-kernel sysimage/unpack.sh), and the iPhone identity;
+#                (Scion-Project/scion-kernel sysimage/unpack.sh), and the iPhone identity;
 #             2. the AVF guest: the kernel (every driver's default), avfboot (avf/shim) and the
 #                small root and the system image (userland/build.sh GL=gfx REST=1), the payload;
 #             3. one 7z archive, AES-256 with its file names hidden: the APK, the VM's files (vm/), install.sh
@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       kernel_ref:
-        description: Scion-Project/hackios-xnu-kernel branch, tag or commit
+        description: Scion-Project/scion-kernel branch, tag or commit
         default: main
       params:
         description: Extra boot-arguments appended to avf.properties' params (optional)
@@ -74,11 +74,11 @@ jobs:
       - name: Install host build tools (Homebrew)
         run: brew install meson ninja pkgconf cmake
 
-      - name: The guest's Vulkan for iOS (hackios-xnu-kernel tools/gfxstream/mk-vk.sh ios; it needs Xcode's clang)
+      - name: The guest's Vulkan for iOS (scion-kernel tools/gfxstream/mk-vk.sh ios; it needs Xcode's clang)
         env:
           KERNEL_REF: ${{ inputs.kernel_ref }}
         run: |
-          git clone -q --filter=blob:none https://github.com/Scion-Project/hackios-xnu-kernel.git "$RUNNER_TEMP/k"
+          git clone -q --filter=blob:none https://github.com/Scion-Project/scion-kernel.git "$RUNNER_TEMP/k"
           git -C "$RUNNER_TEMP/k" checkout -q "$KERNEL_REF"
           VK_BUILD="$RUNNER_TEMP/vk" bash "$RUNNER_TEMP/k/tools/gfxstream/mk-vk.sh" ios
           mkdir -p "$RUNNER_TEMP/vk-out"
@@ -170,7 +170,7 @@ jobs:
         env:
           KERNEL_REF: ${{ inputs.kernel_ref }}
         run: |
-          git clone -q --filter=blob:none https://github.com/Scion-Project/hackios-xnu-kernel.git "$W/k"
+          git clone -q --filter=blob:none https://github.com/Scion-Project/scion-kernel.git "$W/k"
           git -C "$W/k" checkout -q "$KERNEL_REF"
           echo "$W/k: $(git -C "$W/k" log --oneline -1)"
           echo "DEPS_KEY=$(sha256sum "$W/k/xnu-deps/setup.sh" | cut -c1-16)" >> "$GITHUB_ENV"

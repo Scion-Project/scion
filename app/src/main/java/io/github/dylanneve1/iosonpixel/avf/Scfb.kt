@@ -117,7 +117,7 @@ object Scfb {
      * The same stream the framework writes (VirtualMachine.sendMultiTouchEventInternal).
      * [changed] is the finger that went down or up; MOVE reports every finger in [pointers].
      * [timeUs], when given, goes along as MSC_TIMESTAMP (microseconds, wrapping at 32 bits): the
-     * guest's driver (hackios-xnu-kernel 1201) stamps samples with it, so reports it reads in a
+     * guest's driver (scion-kernel 1201) stamps samples with it, so reports it reads in a
      * burst keep their real spacing and UIKit's velocity isn't faked into a fling.
      */
     fun touchReport(action: Action, pointers: List<Pointer>, changed: Int, timeUs: Long? = null): ByteArray {
