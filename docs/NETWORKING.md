@@ -26,7 +26,7 @@ link driver behind HackiOS's `redwood_net` in the guest.
 on, the app adds the INTERNET permission's use, calls `useNetwork(true)`, and shows a check line
 for AVF's network feature. When it's off, the VM is exactly as before: no card.
 
-**The guest side** (hackios-xnu-kernel, `bsd/dev/redwood_virtio_net.c`): HackiOS's virtio-net
+**The guest side** (scion-kernel, `bsd/dev/redwood_virtio_net.c`): HackiOS's virtio-net
 driver runs on the virtio-pci transport. With boot-arg `virtio_net_wifi=1` (in the kernel repo's
 `avf/scion/avf.properties`), en0 is presented to iOS as **Wi-Fi**, the way the phone build presents
 its ath11k radio: RedwoodWLAN's IOKit entries, Apple80211 ioctls answered in the kernel, and a
@@ -44,7 +44,7 @@ the launchd jobs. A root.apfs built without `REST=1` has no configd, so nothing 
 (fixed in hackios-xnu-userland: before the fix, all the on-demand jobs were written to one file
 named `RWA_PACKED16`).
 
-**Turning it on** (needs a kernel with the virtual station: hackios-xnu-kernel main after the
+**Turning it on** (needs a kernel with the virtual station: scion-kernel main after the
 `avf/net-wifi` merge):
 
 1. Rebuild install 2's `payload.bin` from that kernel and push it with `avf/scion/install-ios165.sh`

@@ -222,7 +222,7 @@ than (B), which takes the same layers at the GL level that CA already offers.
 
 Code:
 
-* **hackios-xnu-kernel `avf/gpu3d`**
+* **scion-kernel `avf/gpu3d`**
   - `xnu/files/bsd/sys/redwood_vgpu3d.h`, `xnu/files/bsd/dev/redwood_vgpu3d.c`: the
     portable layer. Plain C with no allocation and no FP (GL floats as bit patterns), so it
     builds both into the kernel (`-mkernel`) and freestanding. It covers capsets,
@@ -304,7 +304,7 @@ would wait for.
 | # | Milestone | Where | Exit criterion |
 |---|---|---|---|
 | **M1** | virtio-gpu 3D bring-up, PowerVR draws for the guest (**done**) | probe + kernel layer | self-test 7/7 on the phone; timings above |
-| **M2** | the kernel layer in XNU on the phone (`gpu3d=1`) (**done in standalone mode**); next, move it onto agent D's control queue | hackios-xnu-kernel | `GPU3D-DONE pass` in the XNU console (**met**, see §4); picture on the AVF display once D's display service is up |
+| **M2** | the kernel layer in XNU on the phone (`gpu3d=1`) (**done in standalone mode**); next, move it onto agent D's control queue | scion-kernel | `GPU3D-DONE pass` in the XNU console (**met**, see §4); picture on the AVF display once D's display service is up |
 | M3 | ASG ring + blobs; an IOUserClient for userland | kernel | encode without control-queue round trips; ≥1 GB/s texture upload |
 | M4 | Darwin port of gfxstream's GLES encoder as eagl.c's library | hackios-xnu-userland | backboardd draws the lock screen through the PowerVR; HackiOS's GL fixups pass |
 | M5 | IOSurfaces as host-visible blobs; CA framebuffer = scanout resource | both | no per-frame guest copies; SpringBoard swipe at 60 Hz with frame times logged (`glframes=1`) |
@@ -360,16 +360,16 @@ another way to get a pipe without virtio).
 
 ```sh
 # bare-metal probe on the phone
-hackios-xnu-kernel/avf/gpu3d/probe/build.sh                 # clang + ld.lld -> out/Image
+scion-kernel/avf/gpu3d/probe/build.sh                 # clang + ld.lld -> out/Image
 (cd scion-avf/gpu3d/app && ./gradlew assembleDebug)
-scion-avf/gpu3d/run-on-device.sh --image hackios-xnu-kernel/avf/gpu3d/probe/out/Image \
+scion-avf/gpu3d/run-on-device.sh --image scion-kernel/avf/gpu3d/probe/out/Image \
     [--params "gpu3d.size=1170x2532"] [-s SERIAL]
 # XNU (M2): avfboot + a payload whose boot-args contain gpu3d=1
 python3 xnuloader/mkpayload.py -o payload.bin kernel=mach.development.bcm2837 ramdisk=hello --cmdline "gpu3d=1 -v"
-scion-avf/gpu3d/run-on-device.sh --image hackios-xnu-kernel/avf/shim/out/Image --initrd payload.bin
+scion-avf/gpu3d/run-on-device.sh --image scion-kernel/avf/shim/out/Image --initrd payload.bin
 # QEMU smoke test of the transport (QEMU's virtio-gpu is 2D: stops at "no 3D")
 qemu-system-aarch64 -M virt -cpu cortex-a76 -m 256 -nographic \
-    -kernel hackios-xnu-kernel/avf/gpu3d/probe/out/Image -device virtio-gpu-pci
+    -kernel scion-kernel/avf/gpu3d/probe/out/Image -device virtio-gpu-pci
 ```
 
 The run script takes `/data/local/tmp/pixel.lock` (waiting for it) and installs only its own

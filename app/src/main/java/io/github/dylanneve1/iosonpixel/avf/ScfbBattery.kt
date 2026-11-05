@@ -13,7 +13,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * The phone's battery for iOS's battery gauge (hackios-xnu-kernel patch 1403,
+ * The phone's battery for iOS's battery gauge (scion-kernel patch 1403,
  * bsd/dev/hakios.scfb_battery.c): Android's battery state, written into a block of the shared
  * framebuffer's header page at [OFF] whenever Android says it changed (ACTION_BATTERY_CHANGED) and
  * every [POLL_MS] besides (the current and the charge counter change without a broadcast). The guest

@@ -9,7 +9,7 @@ import java.nio.ByteBuffer
  * framebuffer's), as it lends those two, and runs gfxstream's host renderer itself on the commands
  * the guest leaves there. The guest's display frames then go from the GPU straight into a window of
  * the app's ([ScfbIo]'s overlay): nothing is read back into the guest and copied out again, which is
- * what made the GPU path laggy (hackios-xnu-kernel xnu/files/bsd/sys/hakios.scgpu.h).
+ * what made the GPU path laggy (scion-kernel xnu/files/bsd/sys/hakios.scgpu.h).
  */
 object Scgpu {
     /** A mailbox and a pool for the pipe's buffers and the transfers' staging (11 MiB for a whole screen). */

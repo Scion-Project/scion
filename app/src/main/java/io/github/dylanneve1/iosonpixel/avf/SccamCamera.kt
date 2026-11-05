@@ -26,7 +26,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * The AVF camera (per-install "Camera" setting, with the experimental display): the phone's camera
- * for the guest, through the camera region ([Sccam], hackios-xnu-kernel avf/CAMERA.md).
+ * for the guest, through the camera region ([Sccam], scion-kernel avf/CAMERA.md).
  *
  * Polls the guest's requests in the region's header every [POLL_MS]; while the guest wants frames
  * (and still reads them, by its heartbeat) the camera it asks for (back or front) runs with Camera2

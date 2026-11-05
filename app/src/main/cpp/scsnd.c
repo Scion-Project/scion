@@ -4,7 +4,7 @@
  * of guest RAM the app lends, as it lends SCFB's, SCCAM's and SCGPU's (AVF's own virtio-snd failed to
  * start two times in three on the Pixel and took the VM with it).
  *
- * The region and its protocol: hackios-xnu-kernel xnu/files/bsd/sys/hakios.scsnd.h (copied below).
+ * The region and its protocol: scion-kernel xnu/files/bsd/sys/hakios.scsnd.h (copied below).
  * A thread watches the ring: when samples come it opens an AAudio stream, whose callback takes them
  * out (at most a little behind: if more has built up, it skips ahead; and not before a little is in, so
  * that a vCPU late by a few milliseconds is not a click), scaled by iOS's volume; after
