@@ -8,7 +8,7 @@ import java.nio.ByteOrder
  * RAM, what the guest is told on its command line, the header the app writes before boot, the
  * guest's requests, and the choice of capture size. Unit-tested (SccamTest).
  *
- * SCCAM is specified in hackios-xnu-kernel's avf/CAMERA.md: a second slice of guest RAM, like the
+ * SCCAM is specified in scion-kernel's avf/CAMERA.md: a second slice of guest RAM, like the
  * shared framebuffer ([Scfb]), backed by an ashmem region of the app's. The app writes the phone's
  * camera frames (NV12) into a ring of slots there; the guest's kernel (patch 1400) reads them and
  * gives them to iOS's camera stack. The control path is the header: the guest asks for frames, a

@@ -13,7 +13,7 @@ port of the [Inferno](https://github.com/ChefKissInc/Inferno) QEMU fork.
 > - **QEMU (Pyre):** iOS 14 on an emulated iPhone 11 boots to the home screen. It's slow: every
 >   Apple CPU instruction goes through QEMU's TCG JIT.
 > - **AVF (hardware virtualization):** Apple's open-source XNU (via
->   [HackiOS](https://github.com/Scion-Project/hackios-xnu-kernel)) runs as a pKVM guest on the
+>   [HackiOS](https://github.com/Scion-Project/scion-kernel)) runs as a pKVM guest on the
 >   Pixel's own CPU cores, with the iOS 16.5 userland. It reaches the **home screen in about 80 s**.
 >   Touch is still being fixed.
 

@@ -1,13 +1,13 @@
 /*
  * SCGPU, the app's side: the guest's GPU in this process. gfxstream's host renderer
- * (libgfxstream_backend.so, built for Android by hackios-xnu-kernel tools/gfxstream/mk-host-android.sh)
+ * (libgfxstream_backend.so, built for Android by scion-kernel tools/gfxstream/mk-host-android.sh)
  * is driven by the guest's virtio-gpu commands, which come through a mailbox in a region of guest
  * RAM the app lends, as it lends SCFB's; the guest's display frames are shown in a window of the
  * app's (gfxstream's subwindow), from the GPU straight to the screen. crosvm's own virtio-gpu could
  * draw with the same renderer but can't show a sideloaded app anything, so every frame came back
  * into the guest and out again through SCFB (17-40 ms a frame of readback on this phone).
  *
- * The region and its protocol: hackios-xnu-kernel xnu/files/bsd/sys/hakios.scgpu.h (copied below).
+ * The region and its protocol: scion-kernel xnu/files/bsd/sys/hakios.scgpu.h (copied below).
  * One command at a time. This thread spins a little after each, then sleeps on the doorbell: a
  * virtio-input device of the app's ("scion-scgpu") whose socket crosvm writes the guest's status
  * events into; it rings the guest back the same way (an event into the socket: an interrupt there),
@@ -136,7 +136,7 @@ struct sr_fence { uint32_t flags; uint64_t fence_id; uint32_t ctx_id; uint8_t ri
 #define CAPSET_GFXSTREAM_VULKAN 3
 
 /*
- * Vulkan for the guest (hackios-xnu-kernel tools/gfxstream/VULKAN.md): gfxstream's Vulkan decoder on the phone's
+ * Vulkan for the guest (scion-kernel tools/gfxstream/VULKAN.md): gfxstream's Vulkan decoder on the phone's
  * own driver, the guest's Vulkan stream on the same pipe as its GL. The guest cannot map host memory here, so
  * host-visible memory is a guest copy moved on flush and invalidate: VirtioGpuNext off, and no insistence on a
  * coherent cached memory type, which that leaves none of. On by default; debug.scion.vk=0 turns it off, and a

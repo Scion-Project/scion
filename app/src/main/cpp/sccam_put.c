@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// Host side of the Scion camera region (SCCAM, hackios-xnu-kernel avf/CAMERA.md) for the AVF
+// Host side of the Scion camera region (SCCAM, scion-kernel avf/CAMERA.md) for the AVF
 // camera (avf/SccamCamera.kt): one Camera2 frame (YUV_420_888) into a slot of the shared region as
 // NV12 (or NV21, when that is how the camera's planes lie), published like a seqlock: the slot's
 // seq odd while it is written, then twice the frame's number, then latest and frame_seq.

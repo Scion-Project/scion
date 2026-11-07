@@ -7,7 +7,7 @@ import java.nio.ByteBuffer
  * avf.properties audio=1) failed to start two times in three on the Pixel and took the VM with it.
  * Instead the app lends the guest one more region of RAM, below the GPU's (or the camera's, or the
  * framebuffer's), as it lends those; the guest's kernel puts what iOS plays into a ring there, and
- * the app plays it through AAudio (hackios-xnu-kernel xnu/files/bsd/sys/hakios.scsnd.h).
+ * the app plays it through AAudio (scion-kernel xnu/files/bsd/sys/hakios.scsnd.h).
  */
 object Scsnd {
     /** A header and a ring of 1.4 s (the player keeps it near empty). */

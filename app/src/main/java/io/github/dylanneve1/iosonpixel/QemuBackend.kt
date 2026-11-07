@@ -70,11 +70,8 @@ class QemuBackend(ctx: Context, private val install: Install) : VmBackend {
 
         // With the Network setting on, slirp reads the phone's DNS servers from this file (#82).
         val resolver = if (network) QemuNet.Resolver(app, paths, log).also { it.start() } else null
-        val env = buildMap {
-            put("TMPDIR", paths.tmpDir.absolutePath)
-            if (settings.effectiveVcpuAffinity.isNotBlank()) put("QEMU_VCPU_AFFINITY", settings.effectiveVcpuAffinity)
-            if (resolver != null) put(QemuNet.ENV_RESOLV_CONF, paths.resolvConf.absolutePath)
-        }
+        val env = QemuCommand.env(paths.tmpDir, settings) +
+            (if (resolver != null) mapOf(QemuNet.ENV_RESOLV_CONF to paths.resolvConf.absolutePath) else emptyMap())
         fun watched(i: VmBackend.Instance): VmBackend.Instance =
             if (resolver != null) QemuNet.Watch(i, paths, resolver) else i
         fun failed(message: String): VmBackend.Instance? {
@@ -195,6 +192,17 @@ object QemuCommand {
      * Restore boots always keep the inferno uplink, which restore tools talk to.
      */
     fun network(vm: VmLayout, s: VmSettings): Boolean = s.qemuNetwork && !restoreBoot(vm)
+
+    /**
+     * Environment for QEMU, the same for the child process and the in-process :vm path.
+     * TMPDIR is where -snapshot puts its overlays (vl.XXXXXX): the app's cache dir, which
+     * only the app's uid can write. QEMU run by hand as another uid (adb shell) needs a
+     * TMPDIR of its own, or it fails with "Could not open temporary file" (#68).
+     */
+    fun env(tmpDir: File, s: VmSettings): Map<String, String> = buildMap {
+        put("TMPDIR", tmpDir.absolutePath)
+        s.effectiveVcpuAffinity.takeIf { it.isNotBlank() }?.let { put("QEMU_VCPU_AFFINITY", it) }
+    }
 
     /** Mirrors the sample command from the Inferno guide, minus host-only display flags. */
     fun build(paths: AppPaths, vm: VmLayout, s: VmSettings): List<String> {
