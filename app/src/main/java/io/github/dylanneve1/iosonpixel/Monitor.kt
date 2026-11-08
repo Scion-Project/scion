@@ -11,7 +11,10 @@ import java.util.concurrent.Executors
 class Monitor(private val paths: AppPaths) {
 
     /** Sends one command synchronously; returns false if QEMU isn't listening. */
-    fun send(command: String): Boolean = try {
+    fun send(command: String): Boolean = query(command) != null
+
+    /** Sends one command synchronously and returns what QEMU printed (up to the last 4 KiB), or null if it isn't listening. */
+    fun query(command: String): String? = try {
         LocalSocket().use { s ->
             s.connect(LocalSocketAddress(paths.monitorSocket.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM))
             s.soTimeout = 2000
@@ -19,25 +22,25 @@ class Monitor(private val paths: AppPaths) {
             readUntilPrompt(input)
             s.outputStream.write("$command\n".toByteArray())
             s.outputStream.flush()
-            readUntilPrompt(input)
+            readUntilPrompt(input).removeSuffix(PROMPT)
         }
-        true
     } catch (e: Exception) {
-        false
+        null
     }
 
-    private fun readUntilPrompt(input: java.io.InputStream) {
+    private fun readUntilPrompt(input: java.io.InputStream): String {
         val tail = StringBuilder()
         while (true) {
             val b = input.read()
-            if (b < 0) return
+            if (b < 0) return tail.toString()
             tail.append(b.toChar())
-            if (tail.endsWith("(qemu) ")) return
+            if (tail.endsWith(PROMPT)) return tail.toString()
             if (tail.length > 4096) tail.delete(0, 2048)
         }
     }
 
     companion object {
+        private const val PROMPT = "(qemu) "
         private val io = Executors.newSingleThreadExecutor()
 
         /** Presses QEMU key [key] for [holdMs] without blocking the caller. */

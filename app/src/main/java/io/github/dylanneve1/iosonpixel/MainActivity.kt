@@ -68,6 +68,7 @@ class MainActivity : Activity() {
     private lateinit var pinning: TextView
     private lateinit var splitWx: Switch
     private lateinit var inProcess: Switch
+    private lateinit var qemuNetwork: Switch
     private lateinit var avfDisplay: Switch
     private lateinit var avfNetwork: Switch
     private lateinit var avfCamera: Switch
@@ -514,6 +515,13 @@ class MainActivity : Activity() {
         )
         // The checks depend on it, so apply it right away.
         inProcess.setOnCheckedChangeListener { _, _ -> if (!filling) { saveSettings(); render() } }
+        qemuNetwork = switch(
+            advanced, "Network (QEMU)",
+            "QEMU only: the guest reaches the internet through the phone's connection (Wi-Fi or mobile data), over " +
+                "its USB link: iOS shows it as a wired network, not Wi-Fi. Off: QEMU opens no network socket. " +
+                "Restore boots never use it. Applies from the next start.", s.qemuNetwork,
+        )
+        qemuNetwork.setOnCheckedChangeListener { _, _ -> if (!filling) { saveSettings(); render() } }
         extraArgs = ui.field(
             advanced, "Extra arguments", s.extraArgs,
             help = "Appended to the QEMU command line, or to the AVF guest's kernel command line. " +
@@ -620,6 +628,7 @@ class MainActivity : Activity() {
         affinity.setText(s.vcpuAffinity)
         splitWx.isChecked = s.splitWx
         inProcess.isChecked = s.inProcess
+        qemuNetwork.isChecked = s.qemuNetwork
         avfDisplay.isChecked = s.avfDisplay
         avfNetwork.isChecked = s.avfNetwork
         avfCamera.isChecked = s.avfCamera
@@ -633,7 +642,8 @@ class MainActivity : Activity() {
         setAdvancedShown(
             s.vcpuAffinity != d.vcpuAffinity || s.splitWx != d.splitWx || s.inProcess != d.inProcess ||
                 s.backend != d.backend || s.security != d.security || s.extraArgs != d.extraArgs ||
-                s.avfDisplay != d.avfDisplay || s.avfNetwork != d.avfNetwork || s.avfCamera != d.avfCamera || devSession,
+                s.avfDisplay != d.avfDisplay || s.avfNetwork != d.avfNetwork || s.avfCamera != d.avfCamera ||
+                s.qemuNetwork != d.qemuNetwork || devSession,
         )
     }
 
@@ -805,13 +815,18 @@ class MainActivity : Activity() {
         statusDot.background = ui.pill(dotColor)
         val notice = VmState.notice?.takeIf { ranHere }
         statusDetail.setTextColor(if (notice != null) Ui.BAD else Ui.MUTED)
-        statusDetail.text = when {
-            notice != null -> notice + (lastExit?.let { "\nLast exit: $it" } ?: "")
-            lastExit != null -> "Last exit: $lastExit"
-            st == VmState.Status.RUNNING && backend.hasDisplay -> "Open the display to use the iPhone."
-            st == VmState.Status.RUNNING -> "No display yet: the guest console is in Diagnostics, below."
-            else -> ""
-        }
+        // The QEMU Network setting's state for the running VM ("Network: waiting for guest", ...).
+        val network = VmState.network?.takeIf { ranHere && st != VmState.Status.STOPPED }
+        statusDetail.text = listOfNotNull(
+            when {
+                notice != null -> notice + (lastExit?.let { "\nLast exit: $it" } ?: "")
+                lastExit != null -> "Last exit: $lastExit"
+                st == VmState.Status.RUNNING && backend.hasDisplay -> "Open the display to use the iPhone."
+                st == VmState.Status.RUNNING -> "No display yet: the guest console is in Diagnostics, below."
+                else -> null
+            },
+            network,
+        ).joinToString("\n")
         statusDetail.visibility = if (statusDetail.text.isEmpty()) View.GONE else View.VISIBLE
 
         val list = backend.checks()
@@ -966,6 +981,7 @@ class MainActivity : Activity() {
             avfDisplay = avfDisplay.isChecked,
             avfNetwork = avfNetwork.isChecked,
             avfCamera = avfCamera.isChecked,
+            qemuNetwork = qemuNetwork.isChecked,
         )
     }
 
