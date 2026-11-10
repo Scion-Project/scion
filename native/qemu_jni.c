@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT-0 */
 /*
  * JNI shim for the in-process QEMU variant (QemuVmService, ":vm" process).
  *

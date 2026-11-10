@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: MIT-0 -->
 # Guest audio: iOS speaker out of the Pixel's speaker
 
 Plan for getting sound from the emulated iPhone 11 (t8030, iOS 14) out of the phone. Speaker

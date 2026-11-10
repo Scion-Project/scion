@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT-0
 # Scion with iOS 16.5 ready to install, built from nothing (Actions > ios-bundle > Run workflow).
 #
 #   apk     (macOS, as release.yaml) the app: app-debug.apk. Our own code and QEMU, no Apple file: passed on as an
