@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT-0
 """Boot restore mode to waiting_host, then measure per-thread host CPU while the guest idles.
 
 Reuses restore_bench.py's command line and kit layout. For each run prints, per QEMU

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT-0
 [submodule "third_party/inferno"]
 	path = third_party/inferno
 	url = https://github.com/Scion-Project/pyre.git

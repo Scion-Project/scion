@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT-0
 # Cross-compiles the Inferno QEMU fork (and its dependencies) for Android arm64,
 # tuned for Tensor G5, and drops the result into app/src/main/jniLibs.
 #

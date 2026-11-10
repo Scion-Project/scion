@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: MIT-0 -->
 # Handoff notes (2026-10-21)
 
 State of the project, everything verified so far, and what to do next. Read

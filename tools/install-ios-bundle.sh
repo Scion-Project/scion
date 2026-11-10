@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT-0
 # Install Scion and its iOS 16.5 VM (AVF) on a Pixel over adb, from the bundle the "ios-bundle" workflow makes
 # (scion-ios-bundle.7z, opened with its passphrase). Run it from the bundle's folder:
 #

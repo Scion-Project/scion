@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT-0
 //
 // Host side of the Scion shared framebuffer (SCFB, scion-avf display/SCFB.md) for the AVF
 // display (avf/ScfbIo.kt): waits for the guest to publish a frame in the shared region and

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT-0 */
 /*
  * SCSND, the app's side: iOS's sound, played through AAudio. The guest's audio server writes what it
  * has mixed for its speaker to /dev/hakios-audio, and the kernel's sink puts it into a ring in a region

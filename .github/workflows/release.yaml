@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT-0
 # Continuous delivery: build the app and publish a GitHub Release on version tags.
 #
 # Trigger:

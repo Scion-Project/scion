@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT-0 */
 /*
  * SCGPU, the app's side: the guest's GPU in this process. gfxstream's host renderer
  * (libgfxstream_backend.so, built for Android by scion-kernel tools/gfxstream/mk-host-android.sh)

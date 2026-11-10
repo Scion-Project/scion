@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT-0
 """Package a finished Inferno setup (the guide's "InfernoData" folder) for the phone.
 
 Run this on the Mac *after* the restore, filesystem patches and first boot
