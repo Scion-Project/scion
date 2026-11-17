@@ -22,15 +22,6 @@ port of the [Inferno](https://github.com/ChefKissInc/Inferno) QEMU fork.
 > kernel is a machine configuration of the same tree as the Galaxy S9's, where iOS 16.5 and iOS 27 run on the phone itself
 > ([scion-kernel](https://github.com/Scion-Project/scion-kernel)). The bare-metal port has run only in QEMU so far.
 
-
-<p>
-<img src="docs/screenshots/avf-ios165-boot.png" width="240" alt="iOS 16.5 booting under AVF on a Pixel 10">
-<img src="docs/screenshots/avf-ios165-home.png" width="240" alt="iOS 16.5 home screen under AVF on a Pixel 10">
-</p>
-
-*iOS 16.5 booting and at the home screen in a pKVM virtual machine on a Pixel 10. The text at the
-bottom is the test app's debug log.*
-
 This project ships **no Apple software**: no IPSWs, keys, firmware, ROMs or pre-made disk images in the
 repository or its releases. For the QEMU backend you prepare those yourself on a Mac by following the upstream
 Inferno guide. For the AVF backend, the owner's `ios-bundle` workflow builds an encrypted, private bundle of the
