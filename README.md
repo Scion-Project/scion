@@ -17,6 +17,12 @@ port of the [Inferno](https://github.com/ChefKissInc/Inferno) QEMU fork.
 >   Pixel's own CPU cores, with the iOS 16.5 userland. It reaches the **home screen in about 80 s**.
 >   Touch is still being fixed.
 
+> **Since then (17 November 2026):** the Pixel 10 also has a bare-metal port outside this app, in which Google's boot
+> loader starts Scion's boot shim, the shim its loader, and the loader XNU: [scion-frankel](https://github.com/Scion-Project/scion-frankel). Its iOS 27
+> kernel is a machine configuration of the same tree as the Galaxy S9's, where iOS 16.5 and iOS 27 run on the phone itself
+> ([scion-kernel](https://github.com/Scion-Project/scion-kernel)). The bare-metal port has run only in QEMU so far.
+
+
 <p>
 <img src="docs/screenshots/avf-ios165-boot.png" width="240" alt="iOS 16.5 booting under AVF on a Pixel 10">
 <img src="docs/screenshots/avf-ios165-home.png" width="240" alt="iOS 16.5 home screen under AVF on a Pixel 10">
