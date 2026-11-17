@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: MIT-0 -->
 # iOS 14.8 smoke boot on Android: how far does XNU get?
 
 Issue #35. Measured on the Android **emulator** (`sdk_gphone64_arm64`, 6 GB RAM, ~650 MB

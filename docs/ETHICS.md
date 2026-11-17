@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: MIT-0 -->
 # Project aim, ethics and legal position
 
 ## Aim

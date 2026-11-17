@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT-0
 """Regression checks for the Android build of QEMU, run on an emulator or phone.
 
 Pushes the cross-built qemu-system-aarch64 to a device over adb and runs:

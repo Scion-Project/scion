@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT-0
 # Generates a PGO profile for the Android QEMU from the iOS 14.8 restore boot
 # (docs/PERF.md, "Compiler and linker options"):
 #   1. builds an instrumented QEMU (native/build/qemu-pgo-gen),

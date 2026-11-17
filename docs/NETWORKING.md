@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: MIT-0 -->
 # Networking: getting the guest online
 
 ## AVF backend (iOS 16.5 on HackiOS's XNU): the "Network" setting

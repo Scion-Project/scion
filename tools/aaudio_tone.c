@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT-0 */
 /*
  * aaudio_tone: Scion audio milestone 3, step 1 probe.
  * Opens an AAudio output stream the way the planned QEMU driver will

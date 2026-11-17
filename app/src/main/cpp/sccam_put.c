@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT-0
 //
 // Host side of the Scion camera region (SCCAM, scion-kernel avf/CAMERA.md) for the AVF
 // camera (avf/SccamCamera.kt): one Camera2 frame (YUV_420_888) into a slot of the shared region as

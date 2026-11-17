@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: MIT-0 -->
 # Related projects (GitHub scan, 2026-10-22)
 
 **Scope.** Projects active in 2025-2026 that could help Pyre (the QEMU/TCG backend) or scion-avf (XNU as a pKVM/crosvm guest). The projects you already know (Inferno, darwin-vm, ios-sweet, HackiOS, qemu-ios, Asahi) appear only where a fork or derivative adds something. Stars and push dates are from the GitHub API on 2026-10-22. "NOASSERTION" means GitHub could not detect the licence; where I read the licence file myself, I give the real one.

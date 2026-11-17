@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT-0
 """Benchmark the iOS restore boot on an Android device, and optionally profile it.
 
 Boots the t8030 machine into the iOS 14 restore environment N times and reports

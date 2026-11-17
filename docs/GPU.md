@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: MIT-0 -->
 # GPU: getting iOS's UI onto the Pixel's GPU
 
 Status: design plus milestones M1 and M2, measured on the phone (2026-10-22). Work is paused

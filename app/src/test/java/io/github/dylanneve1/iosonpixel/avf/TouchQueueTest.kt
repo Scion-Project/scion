@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT-0
 package io.github.dylanneve1.iosonpixel.avf
 
 import org.junit.Assert.assertArrayEquals

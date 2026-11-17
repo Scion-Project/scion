@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT-0 */
 /*
  * The VM's CPUs at the clock speed its frames need. crosvm's vCPU threads work in short bursts (a
  * frame of CoreAnimation's: a few milliseconds every 16), and Android's governor keeps the cores they

@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: MIT-0 -->
 # Roadmap
 
 Ordered roughly by payoff over effort. "Measured" items need a booted VM on a

@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: MIT-0 -->
 # Phone quickstart: iOS 14 on a Pixel (proof of concept)
 
 This page takes you from a finished Inferno setup on a Mac to the emulated

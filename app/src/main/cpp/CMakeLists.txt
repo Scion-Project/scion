@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT-0
 # The AVF display's frame copy (scfb_present.c), the AVF camera's (sccam_put.c), the AVF GPU's device
 # (scgpu.c: gfxstream, libgfxstream_backend.so, loaded at run time) and the AVF sound's player (scsnd.c,
 # AAudio), and the VM's CPUs' clocks while it draws (vmboost.c: a performance hint session). Built by

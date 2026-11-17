@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT-0
 # libgfxstream_backend.so for the APK (app/src/main/jniLibs, which git ignores): gfxstream's host
 # renderer for Android arm64, which the AVF GPU (SCGPU, app/src/main/cpp/scgpu.c) loads at run time.
 # It is built by scion-kernel's tools/gfxstream/mk-host-android.sh (gfxstream at the commit the

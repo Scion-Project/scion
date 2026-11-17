@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: MIT-0 -->
 # Restore-boot benchmark and profile (iOS 14.8, Android)
 
 Issue #48. Measured on the Android **emulator** (`sdk_gphone64_arm64`, 8 host cores) with
